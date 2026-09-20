@@ -248,7 +248,7 @@ async function boot(){
   $('#f').onsubmit = e => { e.preventDefault(); go(); };
   $('#wk').onchange = go;
   $('#mode').onchange = go;
-  setInterval(() => { if (!document.hidden) go(); }, 60000);
+  setInterval(() => { if (!document.hidden) go(); }, 30000);
   if ($('#lid').value) go();
 }
 
