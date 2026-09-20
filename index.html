@@ -10,13 +10,13 @@
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--txt);
     font:15px/1.45 ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif}
-  .wrap{max-width:1000px;margin:0 auto;padding:24px 16px 64px}
+  .wrap{max-width:1060px;margin:0 auto;padding:24px 16px 64px}
   h1{font-size:20px;margin:0 0 2px;letter-spacing:-.02em}
   .sub{color:var(--dim);font-size:13px;margin:0 0 18px}
   form{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px}
   input,select,button{background:var(--card);color:var(--txt);border:1px solid var(--line);
     border-radius:8px;padding:9px 12px;font:inherit}
-  input{flex:1 1 240px;min-width:0}
+  input{flex:1 1 220px;min-width:0}
   button{background:var(--accent);color:#04121c;border-color:transparent;font-weight:650;cursor:pointer}
   .bar-head{display:flex;flex-wrap:wrap;gap:12px 22px;align-items:baseline;
     background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:14px}
@@ -38,13 +38,14 @@
   .W{background:rgba(34,197,94,.16);color:var(--win)}
   .L{background:rgba(239,68,68,.16);color:var(--loss)}
   .T{background:rgba(245,158,11,.16);color:var(--tie)}
-  .track{position:relative;height:22px;background:#0d1423;border-radius:5px;min-width:160px;overflow:hidden}
+  .track{position:relative;height:22px;background:#0d1423;border-radius:5px;min-width:140px;overflow:hidden}
   .fill{height:100%;border-radius:5px}
   .med{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--accent);opacity:.85}
   .gap{font-size:12.5px;font-weight:600}
+  .lead{font-weight:700}
   .dim{color:var(--dim)}
   .err{color:var(--loss)}
-  @media(max-width:700px){.hide-s{display:none}.name{max-width:120px}}
+  @media(max-width:760px){.hide-s{display:none}.name{max-width:120px}}
 </style>
 
 <div class="wrap">
@@ -54,6 +55,10 @@
   <form id="f">
     <input id="lid" placeholder="Sleeper league ID (e.g. 1125183277838565376)" required>
     <select id="wk"></select>
+    <select id="mode">
+      <option value="live">Live points</option>
+      <option value="proj">Projected final</option>
+    </select>
     <button>Load</button>
   </form>
 
@@ -61,47 +66,102 @@
 </div>
 
 <script>
-const API = 'https://api.sleeper.app/v1';
+const HOST = 'https://api.sleeper.app';
 const $ = s => document.querySelector(s);
-const get = u => fetch(API + u).then(r => r.ok ? r.json() : Promise.reject(new Error(u + ' → ' + r.status)));
+const get = u => fetch(HOST + u).then(r => r.ok ? r.json() : Promise.reject(new Error(u + ' → ' + r.status)));
 
 function median(nums){
   const s = [...nums].sort((a,b) => a-b), m = s.length >> 1;
   return s.length % 2 ? s[m] : (s[m-1] + s[m]) / 2;
 }
 
+// Fraction of each team's game still to be played: 1 = kickoff pending, 0 = final.
+function remainingByTeam(games){
+  const out = {};
+  for (const g of games || []) {
+    const m = g.metadata || {};
+    let f;
+    if (g.status === 'pre_game') f = 1;
+    else if (g.status === 'complete' || m.is_over) f = 0;
+    else {
+      const [mm, ss] = String(m.time_remaining || '00:00').split(':').map(Number);
+      f = ((4 - (m.quarter_num || 1)) * 15 + (mm || 0) + (ss || 0) / 60) / 60;
+      f = Math.min(1, Math.max(0, f));
+    }
+    if (m.home_team) out[m.home_team] = f;
+    if (m.away_team) out[m.away_team] = f;
+  }
+  return out;
+}
+
+// Points a start is still expected to add: banked actual + projection scaled by game time left.
+function projectTeam(matchup, projById, rem){
+  const pts = matchup.starters_points || [];
+  return +(matchup.starters || []).reduce((total, pid, i) => {
+    const p = projById[pid];
+    return total + (pts[i] || 0) + (p ? p.pts * (rem[p.team] ?? 0) : 0);
+  }, 0).toFixed(2);
+}
+
 // One row per roster: head-to-head result, median result, and distance from the cut line.
-function computeWeek(matchups){
-  const med = median(matchups.map(m => m.points || 0));
+function computeWeek(matchups, score){
+  const val = m => score ? score(m) : (m.points || 0);
+  const med = median(matchups.map(val));
   const pairs = {};
   for (const m of matchups) if (m.matchup_id != null) (pairs[m.matchup_id] ||= []).push(m);
-  const res = matchups.map(m => {
-    const p = m.points || 0;
+  const rows = matchups.map(m => {
+    const p = val(m);
     const opp = (pairs[m.matchup_id] || []).find(o => o.roster_id !== m.roster_id);
-    const op = opp ? (opp.points || 0) : null;
+    const op = opp ? val(opp) : null;
     return {
-      roster_id: m.roster_id, points: p, oppRoster: opp ? opp.roster_id : null, oppPoints: op,
+      roster_id: m.roster_id, points: p, live: m.points || 0,
+      oppRoster: opp ? opp.roster_id : null, oppPoints: op,
       h2h: op == null ? null : p > op ? 'W' : p < op ? 'L' : 'T',
       med: p > med ? 'W' : p < med ? 'L' : 'T',
       gap: +(p - med).toFixed(2)
     };
   });
-  return { median: med, rows: res };
+  return { median: med, rows };
 }
 
 const fmt = n => n.toFixed(2);
 const esc = s => String(s).replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
 
-async function load(leagueId, week){
+// Projections are a big payload and barely move within a week, so fetch them once per week.
+const projCache = {};
+function projections(season, week, scoring){
+  const key = season + '-' + week;
+  if (!projCache[key]) {
+    const pos = ['QB','RB','WR','TE','K','DEF'].map(p => 'position[]=' + p).join('&');
+    projCache[key] = get(`/projections/nfl/${season}/${week}?season_type=regular&${pos}&order_by=ppr`)
+      .catch(e => { delete projCache[key]; throw e; });
+  }
+  return projCache[key].then(rows => Object.fromEntries(rows.map(r => [r.player_id, {
+    team: r.team || r.player.team,
+    // Score each projection with THIS league's rules rather than Sleeper's generic PPR total.
+    pts: Object.entries(scoring).reduce((s, [k, v]) => s + v * (r.stats[k] || 0), 0)
+  }])));
+}
+
+async function load(leagueId, week, mode){
   $('#out').innerHTML = '<p class="sub">Loading…</p>';
   const [league, users, rosters, matchups] = await Promise.all([
-    get(`/league/${leagueId}`), get(`/league/${leagueId}/users`),
-    get(`/league/${leagueId}/rosters`), get(`/league/${leagueId}/matchups/${week}`)
+    get(`/v1/league/${leagueId}`), get(`/v1/league/${leagueId}/users`),
+    get(`/v1/league/${leagueId}/rosters`), get(`/v1/league/${leagueId}/matchups/${week}`)
   ]);
   if (!matchups || !matchups.length) {
     $('#out').innerHTML = `<p class="sub">No matchups posted for week ${week} in ${esc(league.name)}.</p>`;
     return;
   }
+
+  // Projections/scores are best-effort: if either is unavailable, fall back to live points only.
+  const [projById, rem] = await Promise.all([
+    projections(league.season, week, league.scoring_settings || {}).catch(() => ({})),
+    get(`/scores/nfl/regular/${league.season}/${week}`).then(remainingByTeam).catch(() => ({}))
+  ]);
+  const proj = m => projectTeam(m, projById, rem);
+  const projOk = Object.keys(projById).length > 0;
+  const useProj = mode === 'proj' && projOk;
 
   const userById = Object.fromEntries(users.map(u => [u.user_id, u]));
   const rosterById = Object.fromEntries(rosters.map(r => [r.roster_id, r]));
@@ -110,13 +170,15 @@ async function load(leagueId, week){
     return u ? ((u.metadata || {}).team_name || u.display_name) : `Roster ${rid}`;
   };
 
-  const { median: med, rows } = computeWeek(matchups);
+  const { median: med, rows } = computeWeek(matchups, useProj ? proj : null);
+  const projByRoster = Object.fromEntries(matchups.map(m => [m.roster_id, proj(m)]));
   rows.sort((a,b) => b.points - a.points);
   const max = Math.max(...rows.map(r => r.points), med, 1);
   const pct = v => (v / max * 100).toFixed(2) + '%';
   const half = rows.length / 2;
   const medianOn = league.settings.league_average_match === 1;
-  const live = rows.some(r => r.points > 0) && rows.some(r => r.points === 0);
+  const inProgress = Object.values(rem).some(f => f > 0 && f < 1);
+  const notStarted = Object.values(rem).filter(f => f === 1).length;
 
   const body = rows.map((r, i) => {
     const u = userById[(rosterById[r.roster_id] || {}).owner_id] || {};
@@ -131,7 +193,8 @@ async function load(leagueId, week){
         <div><div class="name">${esc(teamName(r.roster_id))}</div>
         <small>${s.wins||0}-${s.losses||0}${s.ties ? '-'+s.ties : ''} &rarr; ${(s.wins||0)+add}-${(s.losses||0)+sub}${s.ties ? '-'+s.ties : ''}</small></div>
       </div></td>
-      <td class="num"><b>${fmt(r.points)}</b></td>
+      <td class="num ${useProj ? 'dim' : 'lead'}">${fmt(r.live)}</td>
+      ${projOk ? `<td class="num ${useProj ? 'lead' : 'dim'}">${fmt(projByRoster[r.roster_id])}</td>` : ''}
       <td><div class="track">
         <div class="fill" style="width:${pct(r.points)};background:${color};opacity:.55"></div>
         <div class="med" style="left:${pct(med)}"></div>
@@ -139,44 +202,49 @@ async function load(leagueId, week){
       <td class="num gap" style="color:${color}">${r.gap > 0 ? '+' : ''}${fmt(r.gap)}</td>
       <td class="num"><span class="pill ${r.med}">${r.med}</span></td>
       <td class="num hide-s">${r.h2h ? `<span class="pill ${r.h2h}">${r.h2h}</span>` : '<span class="dim">bye</span>'}</td>
-      <td class="hide-s"><small style="color:var(--dim)">${r.oppRoster ? esc(teamName(r.oppRoster)) + ' ' + fmt(r.oppPoints) : ''}</small></td>
+      <td class="hide-s"><small class="dim">${r.oppRoster ? esc(teamName(r.oppRoster)) + ' ' + fmt(r.oppPoints) : ''}</small></td>
     </tr>`;
   }).join('');
 
   $('#out').innerHTML = `
     <div class="bar-head">
       <div class="stat"><span>League</span><b>${esc(league.name)}</b></div>
-      <div class="stat"><span>Week ${week} median</span><b style="color:var(--accent)">${fmt(med)}</b></div>
+      <div class="stat"><span>Week ${week} ${useProj ? 'projected' : 'live'} median</span><b style="color:var(--accent)">${fmt(med)}</b></div>
       <div class="stat"><span>Above the line</span><b>${rows.filter(r => r.med === 'W').length} of ${rows.length}</b></div>
       <div class="stat"><span>Updated</span><b>${new Date().toLocaleTimeString()}</b></div>
     </div>
     ${medianOn ? '' : '<p class="note">Heads up: this league does not have Sleeper median scoring enabled, so the projected records below are hypothetical.</p>'}
-    ${live ? '<p class="note">Scores are still coming in — the median moves as teams play.</p>' : ''}
+    ${mode === 'proj' && !projOk ? '<p class="note">No projections available for this week — showing live points instead.</p>' : ''}
+    ${useProj && inProgress ? '<p class="note">Projected = points banked so far plus each starter&rsquo;s projection scaled by game time remaining.</p>' : ''}
+    ${!useProj && notStarted ? `<p class="note">${notStarted} teams have not kicked off yet — switch to Projected final to see the likely cut line.</p>` : ''}
     <table><thead><tr>
-      <th></th><th>Team &rarr; projected record</th><th class="num">Points</th>
-      <th>vs median</th><th class="num">Gap</th><th class="num">Med</th>
+      <th></th><th>Team &rarr; projected record</th><th class="num">Live</th>
+      ${projOk ? '<th class="num">Proj</th>' : ''}
+      <th>vs ${useProj ? 'projected' : 'live'} median</th><th class="num">Gap</th><th class="num">Med</th>
       <th class="num hide-s">H2H</th><th class="hide-s">Opponent</th>
     </tr></thead><tbody>${body}</tbody></table>`;
 }
 
-// ---- boot ----
 async function boot(){
   const p = new URLSearchParams(location.search);
-  const state = await get('/state/nfl').catch(() => ({ week: 1 }));
+  const state = await get('/v1/state/nfl').catch(() => ({ week: 1 }));
   const cur = +(p.get('week') || state.week || 1);
   $('#wk').innerHTML = Array.from({length: 18}, (_, i) =>
     `<option value="${i+1}" ${i+1 === cur ? 'selected' : ''}>Week ${i+1}</option>`).join('');
   $('#lid').value = p.get('league') || localStorage.getItem('leagueId') || '';
+  $('#mode').value = p.get('mode') || localStorage.getItem('mode') || 'live';
 
   const go = () => {
-    const id = $('#lid').value.trim(), wk = $('#wk').value;
+    const id = $('#lid').value.trim(), wk = $('#wk').value, mode = $('#mode').value;
     if (!id) return;
     localStorage.setItem('leagueId', id);
-    history.replaceState(null, '', `?league=${id}&week=${wk}`);
-    load(id, wk).catch(e => $('#out').innerHTML = `<p class="err">${esc(e.message)}</p>`);
+    localStorage.setItem('mode', mode);
+    history.replaceState(null, '', `?league=${id}&week=${wk}&mode=${mode}`);
+    load(id, wk, mode).catch(e => $('#out').innerHTML = `<p class="err">${esc(e.message)}</p>`);
   };
   $('#f').onsubmit = e => { e.preventDefault(); go(); };
   $('#wk').onchange = go;
+  $('#mode').onchange = go;
   setInterval(() => { if (!document.hidden) go(); }, 60000);
   if ($('#lid').value) go();
 }
@@ -185,6 +253,7 @@ function selftest(){
   const a = (c, m) => { if (!c) throw new Error(m); };
   a(median([1,2,3]) === 2, 'odd median');
   a(median([1,2,3,4]) === 2.5, 'even median');
+
   const w = computeWeek([
     {roster_id:1, matchup_id:1, points:100}, {roster_id:2, matchup_id:1, points:90},
     {roster_id:3, matchup_id:2, points:80},  {roster_id:4, matchup_id:2, points:70}
@@ -196,6 +265,38 @@ function selftest(){
   a(r[2].med === 'W' && r[2].h2h === 'L', 'h2h loser can still beat median');
   a(r[3].gap === -5, 'gap to median');
   a(computeWeek([{roster_id:1, matchup_id:null, points:50}]).rows[0].h2h === null, 'bye has no h2h');
+
+  const rem = remainingByTeam([
+    {status:'pre_game', metadata:{home_team:'AAA', away_team:'BBB'}},
+    {status:'complete', metadata:{home_team:'CCC', away_team:'DDD'}},
+    {status:'in_game', metadata:{home_team:'EEE', away_team:'FFF', quarter_num:3, time_remaining:'00:00'}},
+    {status:'in_game', metadata:{home_team:'GGG', away_team:'HHH', quarter_num:1, time_remaining:'15:00'}},
+    {status:'in_game', metadata:{home_team:'III', away_team:'JJJ', quarter_num:5, time_remaining:'04:00'}}
+  ]);
+  a(rem.AAA === 1 && rem.BBB === 1, 'pre-game has full game left');
+  a(rem.CCC === 0, 'final has none left');
+  a(rem.EEE === 0.25, 'end of Q3 leaves a quarter');
+  a(rem.GGG === 1, 'kickoff leaves the full game');
+  a(rem.III === 0, 'overtime clamps to zero');
+
+  const projById = {p1:{team:'AAA', pts:20}, p2:{team:'CCC', pts:18}, p3:{team:'EEE', pts:12}};
+  const t = projectTeam({starters:['p1','p2','p3','0'], starters_points:[0, 14, 5, 0]}, projById, rem);
+  a(t === 42, 'projected = 0+20 banked-none, 14+0 final, 5+3 quarter left, empty slot 0; got ' + t);
+  a(projectTeam({starters:['p1'], starters_points:[0]}, {}, rem) === 0, 'missing projection contributes nothing');
+  a(projectTeam({starters:['p1'], starters_points:[]}, projById, {}) === 0, 'unknown game state adds no projection');
+
+  // Roster 1 trails on live points but has a full game left; roster 2 is nearly done.
+  const wk = [
+    {roster_id:1, matchup_id:1, points:10, starters:['p1'], starters_points:[10]},
+    {roster_id:2, matchup_id:1, points:25, starters:['p3'], starters_points:[25]}
+  ];
+  const lw = computeWeek(wk);
+  a(lw.rows[0].med === 'L' && lw.rows[1].med === 'W', 'live view: roster 2 is above the median');
+  const pw = computeWeek(wk, m => projectTeam(m, projById, rem));
+  a(pw.median === 29, 'projected median, got ' + pw.median);
+  a(pw.rows[0].points === 30 && pw.rows[0].live === 10, 'row keeps both live and projected totals');
+  a(pw.rows[0].med === 'W' && pw.rows[1].med === 'L', 'projection flips who clears the median');
+
   document.body.innerHTML = '<p style="padding:24px;color:#22c55e">selftest: all passed</p>';
 }
 
