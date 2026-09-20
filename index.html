@@ -1,0 +1,203 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Median Watch — Sleeper</title>
+<style>
+  :root{
+    --bg:#0a0e18; --card:#121a2b; --line:#1f2a40; --txt:#e8edf7; --dim:#8494b0;
+    --win:#22c55e; --loss:#ef4444; --tie:#f59e0b; --accent:#38bdf8;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font:15px/1.45 ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif}
+  .wrap{max-width:1000px;margin:0 auto;padding:24px 16px 64px}
+  h1{font-size:20px;margin:0 0 2px;letter-spacing:-.02em}
+  .sub{color:var(--dim);font-size:13px;margin:0 0 18px}
+  form{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px}
+  input,select,button{background:var(--card);color:var(--txt);border:1px solid var(--line);
+    border-radius:8px;padding:9px 12px;font:inherit}
+  input{flex:1 1 240px;min-width:0}
+  button{background:var(--accent);color:#04121c;border-color:transparent;font-weight:650;cursor:pointer}
+  .bar-head{display:flex;flex-wrap:wrap;gap:12px 22px;align-items:baseline;
+    background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:14px}
+  .stat b{font-size:19px;font-variant-numeric:tabular-nums}
+  .stat span{color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:.06em;display:block}
+  .note{color:var(--tie);font-size:12.5px;margin:0 0 14px}
+  table{width:100%;border-collapse:collapse}
+  th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);
+    text-align:left;font-weight:600;padding:0 8px 6px;white-space:nowrap}
+  td{padding:7px 8px;border-top:1px solid var(--line);vertical-align:middle}
+  tr.cut td{border-top:2px dashed var(--accent)}
+  .num{font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+  .team{display:flex;align-items:center;gap:9px;min-width:150px}
+  .team img{width:26px;height:26px;border-radius:6px;background:var(--line);flex:none}
+  .team small{display:block;color:var(--dim);font-size:11.5px}
+  .name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:190px}
+  .pill{display:inline-block;min-width:20px;text-align:center;padding:2px 7px;border-radius:5px;
+    font-size:12px;font-weight:700}
+  .W{background:rgba(34,197,94,.16);color:var(--win)}
+  .L{background:rgba(239,68,68,.16);color:var(--loss)}
+  .T{background:rgba(245,158,11,.16);color:var(--tie)}
+  .track{position:relative;height:22px;background:#0d1423;border-radius:5px;min-width:160px;overflow:hidden}
+  .fill{height:100%;border-radius:5px}
+  .med{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--accent);opacity:.85}
+  .gap{font-size:12.5px;font-weight:600}
+  .dim{color:var(--dim)}
+  .err{color:var(--loss)}
+  @media(max-width:700px){.hide-s{display:none}.name{max-width:120px}}
+</style>
+
+<div class="wrap">
+  <h1>Median Watch</h1>
+  <p class="sub">Live league-median race — top half banks an extra win, bottom half an extra loss.</p>
+
+  <form id="f">
+    <input id="lid" placeholder="Sleeper league ID (e.g. 1125183277838565376)" required>
+    <select id="wk"></select>
+    <button>Load</button>
+  </form>
+
+  <div id="out"></div>
+</div>
+
+<script>
+const API = 'https://api.sleeper.app/v1';
+const $ = s => document.querySelector(s);
+const get = u => fetch(API + u).then(r => r.ok ? r.json() : Promise.reject(new Error(u + ' → ' + r.status)));
+
+function median(nums){
+  const s = [...nums].sort((a,b) => a-b), m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m-1] + s[m]) / 2;
+}
+
+// One row per roster: head-to-head result, median result, and distance from the cut line.
+function computeWeek(matchups){
+  const med = median(matchups.map(m => m.points || 0));
+  const pairs = {};
+  for (const m of matchups) if (m.matchup_id != null) (pairs[m.matchup_id] ||= []).push(m);
+  const res = matchups.map(m => {
+    const p = m.points || 0;
+    const opp = (pairs[m.matchup_id] || []).find(o => o.roster_id !== m.roster_id);
+    const op = opp ? (opp.points || 0) : null;
+    return {
+      roster_id: m.roster_id, points: p, oppRoster: opp ? opp.roster_id : null, oppPoints: op,
+      h2h: op == null ? null : p > op ? 'W' : p < op ? 'L' : 'T',
+      med: p > med ? 'W' : p < med ? 'L' : 'T',
+      gap: +(p - med).toFixed(2)
+    };
+  });
+  return { median: med, rows: res };
+}
+
+const fmt = n => n.toFixed(2);
+const esc = s => String(s).replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+
+async function load(leagueId, week){
+  $('#out').innerHTML = '<p class="sub">Loading…</p>';
+  const [league, users, rosters, matchups] = await Promise.all([
+    get(`/league/${leagueId}`), get(`/league/${leagueId}/users`),
+    get(`/league/${leagueId}/rosters`), get(`/league/${leagueId}/matchups/${week}`)
+  ]);
+  if (!matchups || !matchups.length) {
+    $('#out').innerHTML = `<p class="sub">No matchups posted for week ${week} in ${esc(league.name)}.</p>`;
+    return;
+  }
+
+  const userById = Object.fromEntries(users.map(u => [u.user_id, u]));
+  const rosterById = Object.fromEntries(rosters.map(r => [r.roster_id, r]));
+  const teamName = rid => {
+    const u = userById[(rosterById[rid] || {}).owner_id];
+    return u ? ((u.metadata || {}).team_name || u.display_name) : `Roster ${rid}`;
+  };
+
+  const { median: med, rows } = computeWeek(matchups);
+  rows.sort((a,b) => b.points - a.points);
+  const max = Math.max(...rows.map(r => r.points), med, 1);
+  const pct = v => (v / max * 100).toFixed(2) + '%';
+  const half = rows.length / 2;
+  const medianOn = league.settings.league_average_match === 1;
+  const live = rows.some(r => r.points > 0) && rows.some(r => r.points === 0);
+
+  const body = rows.map((r, i) => {
+    const u = userById[(rosterById[r.roster_id] || {}).owner_id] || {};
+    const s = (rosterById[r.roster_id] || {}).settings || {};
+    const add = (r.h2h === 'W' ? 1 : 0) + (r.med === 'W' ? 1 : 0);
+    const sub = (r.h2h === 'L' ? 1 : 0) + (r.med === 'L' ? 1 : 0);
+    const color = r.med === 'W' ? 'var(--win)' : r.med === 'L' ? 'var(--loss)' : 'var(--tie)';
+    return `<tr class="${i === half ? 'cut' : ''}">
+      <td class="num dim">${i+1}</td>
+      <td><div class="team">
+        ${u.avatar ? `<img src="https://sleepercdn.com/avatars/thumbs/${esc(u.avatar)}" alt="" onerror="this.remove()">` : ''}
+        <div><div class="name">${esc(teamName(r.roster_id))}</div>
+        <small>${s.wins||0}-${s.losses||0}${s.ties ? '-'+s.ties : ''} &rarr; ${(s.wins||0)+add}-${(s.losses||0)+sub}${s.ties ? '-'+s.ties : ''}</small></div>
+      </div></td>
+      <td class="num"><b>${fmt(r.points)}</b></td>
+      <td><div class="track">
+        <div class="fill" style="width:${pct(r.points)};background:${color};opacity:.55"></div>
+        <div class="med" style="left:${pct(med)}"></div>
+      </div></td>
+      <td class="num gap" style="color:${color}">${r.gap > 0 ? '+' : ''}${fmt(r.gap)}</td>
+      <td class="num"><span class="pill ${r.med}">${r.med}</span></td>
+      <td class="num hide-s">${r.h2h ? `<span class="pill ${r.h2h}">${r.h2h}</span>` : '<span class="dim">bye</span>'}</td>
+      <td class="hide-s"><small style="color:var(--dim)">${r.oppRoster ? esc(teamName(r.oppRoster)) + ' ' + fmt(r.oppPoints) : ''}</small></td>
+    </tr>`;
+  }).join('');
+
+  $('#out').innerHTML = `
+    <div class="bar-head">
+      <div class="stat"><span>League</span><b>${esc(league.name)}</b></div>
+      <div class="stat"><span>Week ${week} median</span><b style="color:var(--accent)">${fmt(med)}</b></div>
+      <div class="stat"><span>Above the line</span><b>${rows.filter(r => r.med === 'W').length} of ${rows.length}</b></div>
+      <div class="stat"><span>Updated</span><b>${new Date().toLocaleTimeString()}</b></div>
+    </div>
+    ${medianOn ? '' : '<p class="note">Heads up: this league does not have Sleeper median scoring enabled, so the projected records below are hypothetical.</p>'}
+    ${live ? '<p class="note">Scores are still coming in — the median moves as teams play.</p>' : ''}
+    <table><thead><tr>
+      <th></th><th>Team &rarr; projected record</th><th class="num">Points</th>
+      <th>vs median</th><th class="num">Gap</th><th class="num">Med</th>
+      <th class="num hide-s">H2H</th><th class="hide-s">Opponent</th>
+    </tr></thead><tbody>${body}</tbody></table>`;
+}
+
+// ---- boot ----
+async function boot(){
+  const p = new URLSearchParams(location.search);
+  const state = await get('/state/nfl').catch(() => ({ week: 1 }));
+  const cur = +(p.get('week') || state.week || 1);
+  $('#wk').innerHTML = Array.from({length: 18}, (_, i) =>
+    `<option value="${i+1}" ${i+1 === cur ? 'selected' : ''}>Week ${i+1}</option>`).join('');
+  $('#lid').value = p.get('league') || localStorage.getItem('leagueId') || '';
+
+  const go = () => {
+    const id = $('#lid').value.trim(), wk = $('#wk').value;
+    if (!id) return;
+    localStorage.setItem('leagueId', id);
+    history.replaceState(null, '', `?league=${id}&week=${wk}`);
+    load(id, wk).catch(e => $('#out').innerHTML = `<p class="err">${esc(e.message)}</p>`);
+  };
+  $('#f').onsubmit = e => { e.preventDefault(); go(); };
+  $('#wk').onchange = go;
+  setInterval(() => { if (!document.hidden) go(); }, 60000);
+  if ($('#lid').value) go();
+}
+
+function selftest(){
+  const a = (c, m) => { if (!c) throw new Error(m); };
+  a(median([1,2,3]) === 2, 'odd median');
+  a(median([1,2,3,4]) === 2.5, 'even median');
+  const w = computeWeek([
+    {roster_id:1, matchup_id:1, points:100}, {roster_id:2, matchup_id:1, points:90},
+    {roster_id:3, matchup_id:2, points:80},  {roster_id:4, matchup_id:2, points:70}
+  ]);
+  a(w.median === 85, 'median of week');
+  const r = Object.fromEntries(w.rows.map(x => [x.roster_id, x]));
+  a(r[1].h2h === 'W' && r[1].med === 'W', 'top team sweeps');
+  a(r[4].h2h === 'L' && r[4].med === 'L', 'bottom team drops two');
+  a(r[2].med === 'W' && r[2].h2h === 'L', 'h2h loser can still beat median');
+  a(r[3].gap === -5, 'gap to median');
+  a(computeWeek([{roster_id:1, matchup_id:null, points:50}]).rows[0].h2h === null, 'bye has no h2h');
+  document.body.innerHTML = '<p style="padding:24px;color:#22c55e">selftest: all passed</p>';
+}
+
+new URLSearchParams(location.search).has('test') ? selftest() : boot();
+</script>
