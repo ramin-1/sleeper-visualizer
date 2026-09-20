@@ -75,31 +75,47 @@ function median(nums){
   return s.length % 2 ? s[m] : (s[m-1] + s[m]) / 2;
 }
 
-// Fraction of each team's game still to be played: 1 = kickoff pending, 0 = final.
-function remainingByTeam(games){
+// Seconds left in each team's game. This is Sleeper's own clock logic, matched to the
+// web app so our projections line up with the numbers shown in their matchup screen.
+function secondsLeftByTeam(games){
   const out = {};
   for (const g of games || []) {
     const m = g.metadata || {};
-    let f;
-    if (g.status === 'pre_game') f = 1;
-    else if (g.status === 'complete' || m.is_over) f = 0;
+    const q = m.quarter;
+    let left;
+    if (g.status === 'complete' || m.is_over || q === 'F' || q === 'F/OT' || q === 'OT') left = 0;
+    else if (g.status === 'pre_game' || !q) left = 3600;
+    else if (q === 'HALF' || q === 'Halftime') left = 1800;
     else {
-      const [mm, ss] = String(m.time_remaining || '00:00').split(':').map(Number);
-      f = ((4 - (m.quarter_num || 1)) * 15 + (mm || 0) + (ss || 0) / 60) / 60;
-      f = Math.min(1, Math.max(0, f));
+      const [mm, ss] = String(m.time_remaining || '0:00').split(':').map(n => parseInt(n) || 0);
+      left = 15 * (4 - Math.min(+q || 0, 4)) * 60 + 60 * mm + ss;
     }
-    if (m.home_team) out[m.home_team] = f;
-    if (m.away_team) out[m.away_team] = f;
+    if (m.home_team) out[m.home_team] = left;
+    if (m.away_team) out[m.away_team] = left;
   }
   return out;
 }
 
-// Points a start is still expected to add: banked actual + projection scaled by game time left.
-function projectTeam(matchup, projById, rem){
+// Sleeper's live projection, ported from their web bundle. It blends the pre-game
+// projection toward the player's current scoring pace as the clock runs down: at kickoff
+// you get the projection, at the final whistle you get the actual, and in between a
+// weighted mix. Reproduces the number their app displays to the cent.
+function liveProjection(actual, projection, secsLeft){
+  const mins = 60, left = secsLeft / (60 * mins);
+  const pace = actual + actual / ((mins - secsLeft / 60) || 1) * (secsLeft / mins) * left;
+  const spread = 0.2 * left * pace + (0.35 + 0.65 * (1 - left)) * pace + 0.45 * left * pace;
+  const hi = Math.max(spread, actual);
+  const base = left >= 1 ? projection : Math.max(projection, actual);
+  if (left <= 0 && actual < 0) return actual;
+  return base + (1 - left) * (hi - base);
+}
+
+function projectTeam(matchup, projById, secs){
   const pts = matchup.starters_points || [];
   return +(matchup.starters || []).reduce((total, pid, i) => {
     const p = projById[pid];
-    return total + (pts[i] || 0) + (p ? p.pts * (rem[p.team] ?? 0) : 0);
+    if (!p) return total + (pts[i] || 0);
+    return total + liveProjection(pts[i] || 0, p.pts, secs[p.team] ?? 0);
   }, 0).toFixed(2);
 }
 
@@ -158,11 +174,11 @@ async function load(leagueId, week, mode){
   }
 
   // Projections/scores are best-effort: if either is unavailable, fall back to live points only.
-  const [projById, rem] = await Promise.all([
+  const [projById, secs] = await Promise.all([
     projections(league.season, week, league.scoring_settings || {}).catch(() => ({})),
-    get(`/scores/nfl/regular/${league.season}/${week}`).then(remainingByTeam).catch(() => ({}))
+    get(`/scores/nfl/regular/${league.season}/${week}`).then(secondsLeftByTeam).catch(() => ({}))
   ]);
-  const proj = m => projectTeam(m, projById, rem);
+  const proj = m => projectTeam(m, projById, secs);
   const projOk = Object.keys(projById).length > 0;
   const useProj = mode === 'proj' && projOk;
 
@@ -180,8 +196,8 @@ async function load(leagueId, week, mode){
   const pct = v => (v / max * 100).toFixed(2) + '%';
   const half = rows.length / 2;
   const medianOn = league.settings.league_average_match === 1;
-  const inProgress = Object.values(rem).some(f => f > 0 && f < 1);
-  const notStarted = Object.values(rem).filter(f => f === 1).length;
+  const inProgress = Object.values(secs).some(v => v > 0 && v < 3600);
+  const notStarted = Object.values(secs).filter(v => v === 3600).length;
 
   const body = rows.map((r, i) => {
     const u = userById[(rosterById[r.roster_id] || {}).owner_id] || {};
@@ -218,7 +234,7 @@ async function load(leagueId, week, mode){
     </div>
     ${medianOn ? '' : '<p class="note">Heads up: this league does not have Sleeper median scoring enabled, so the projected records below are hypothetical.</p>'}
     ${mode === 'proj' && !projOk ? '<p class="note">No projections available for this week — showing live points instead.</p>' : ''}
-    ${useProj && inProgress ? '<p class="note">Projected = points banked so far plus each starter&rsquo;s projection scaled by game time remaining.</p>' : ''}
+    ${useProj && inProgress ? '<p class="note">Projected uses Sleeper&rsquo;s own live formula &mdash; each starter&rsquo;s pre-game projection blended toward their current pace as the clock runs down.</p>' : ''}
     ${!useProj && notStarted ? `<p class="note">${notStarted} teams have not kicked off yet — switch to Projected final to see the likely cut line.</p>` : ''}
     <table><thead><tr>
       <th></th><th>Team &rarr; projected record</th><th class="num">Live</th>
@@ -269,35 +285,46 @@ function selftest(){
   a(r[3].gap === -5, 'gap to median');
   a(computeWeek([{roster_id:1, matchup_id:null, points:50}]).rows[0].h2h === null, 'bye has no h2h');
 
-  const rem = remainingByTeam([
+  const near = (x, y) => Math.abs(x - y) < 0.005;
+  const secs = secondsLeftByTeam([
     {status:'pre_game', metadata:{home_team:'AAA', away_team:'BBB'}},
     {status:'complete', metadata:{home_team:'CCC', away_team:'DDD'}},
-    {status:'in_game', metadata:{home_team:'EEE', away_team:'FFF', quarter_num:3, time_remaining:'00:00'}},
-    {status:'in_game', metadata:{home_team:'GGG', away_team:'HHH', quarter_num:1, time_remaining:'15:00'}},
-    {status:'in_game', metadata:{home_team:'III', away_team:'JJJ', quarter_num:5, time_remaining:'04:00'}}
+    {status:'in_game', metadata:{home_team:'EEE', away_team:'FFF', quarter:'3', time_remaining:'00:00'}},
+    {status:'in_game', metadata:{home_team:'GGG', away_team:'HHH', quarter:'1', time_remaining:'15:00'}},
+    {status:'in_game', metadata:{home_team:'III', away_team:'JJJ', quarter:'HALF', time_remaining:'00:00'}},
+    {status:'in_game', metadata:{home_team:'KKK', away_team:'LLL', quarter:'4', time_remaining:'02:00'}}
   ]);
-  a(rem.AAA === 1 && rem.BBB === 1, 'pre-game has full game left');
-  a(rem.CCC === 0, 'final has none left');
-  a(rem.EEE === 0.25, 'end of Q3 leaves a quarter');
-  a(rem.GGG === 1, 'kickoff leaves the full game');
-  a(rem.III === 0, 'overtime clamps to zero');
+  a(secs.AAA === 3600 && secs.BBB === 3600, 'pre-game has the full hour left');
+  a(secs.CCC === 0, 'final has none left');
+  a(secs.EEE === 900, 'end of Q3 leaves a quarter');
+  a(secs.GGG === 3600, 'kickoff leaves the full game');
+  a(secs.III === 1800, 'halftime leaves a half');
+  a(secs.KKK === 120, 'two minutes in Q4');
 
-  const projById = {p1:{team:'AAA', pts:20}, p2:{team:'CCC', pts:18}, p3:{team:'EEE', pts:12}};
-  const t = projectTeam({starters:['p1','p2','p3','0'], starters_points:[0, 14, 5, 0]}, projById, rem);
-  a(t === 42, 'projected = 0+20 banked-none, 14+0 final, 5+3 quarter left, empty slot 0; got ' + t);
-  a(projectTeam({starters:['p1'], starters_points:[0]}, {}, rem) === 0, 'missing projection contributes nothing');
-  a(projectTeam({starters:['p1'], starters_points:[]}, projById, {}) === 0, 'unknown game state adds no projection');
+  // Real numbers read off Sleeper's own matchup screen; ours must reproduce them.
+  a(near(liveProjection(28.48, 19.98, 120), 28.51), 'matches Sleeper: Purdy 28.51');
+  a(near(liveProjection(5.00, 8.22, 120), 5.11), 'matches Sleeper: Pineiro 5.11');
+  a(near(liveProjection(8.30, 14.05, 101), 8.47), 'matches Sleeper: Jeanty 8.47');
+  a(near(liveProjection(4.50, 11.02, 287), 5.05), 'matches Sleeper: Price 5.05');
+  a(liveProjection(0, 16.55, 3600) === 16.55, 'before kickoff it is just the projection');
+  a(near(liveProjection(18.60, 12.67, 0), 18.60), 'at the whistle it is just the actual');
 
-  // Roster 1 trails on live points but has a full game left; roster 2 is nearly done.
+  const projById = {p1:{team:'AAA', pts:20}, p2:{team:'CCC', pts:18}, p3:{team:'KKK', pts:12}};
+  const t = projectTeam({starters:['p1','p2','p3','0'], starters_points:[0, 14, 5, 0]}, projById, secs);
+  a(t === 39.24, 'team total sums per-starter live projections; got ' + t);
+  a(projectTeam({starters:['zz'], starters_points:[7]}, {}, secs) === 7, 'unprojected starter still banks actual');
+
+  // Roster 1 has not kicked off; roster 2 is nearly done and cannot add much.
   const wk = [
-    {roster_id:1, matchup_id:1, points:10, starters:['p1'], starters_points:[10]},
-    {roster_id:2, matchup_id:1, points:25, starters:['p3'], starters_points:[25]}
+    {roster_id:1, matchup_id:1, points:0,  starters:['q1'], starters_points:[0]},
+    {roster_id:2, matchup_id:1, points:25, starters:['q2'], starters_points:[25]}
   ];
+  const pb = {q1:{team:'AAA', pts:30}, q2:{team:'KKK', pts:12}};
   const lw = computeWeek(wk);
   a(lw.rows[0].med === 'L' && lw.rows[1].med === 'W', 'live view: roster 2 is above the median');
-  const pw = computeWeek(wk, m => projectTeam(m, projById, rem));
-  a(pw.median === 29, 'projected median, got ' + pw.median);
-  a(pw.rows[0].points === 30 && pw.rows[0].live === 10, 'row keeps both live and projected totals');
+  const pw = computeWeek(wk, m => projectTeam(m, pb, secs));
+  a(pw.median === 27.515, 'projected median, got ' + pw.median);
+  a(pw.rows[0].points === 30 && pw.rows[0].live === 0, 'row keeps both live and projected totals');
   a(pw.rows[0].med === 'W' && pw.rows[1].med === 'L', 'projection flips who clears the median');
 
   document.body.innerHTML = '<p style="padding:24px;color:#22c55e">selftest: all passed</p>';
