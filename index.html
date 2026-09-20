@@ -127,16 +127,19 @@ function computeWeek(matchups, score){
 const fmt = n => n.toFixed(2);
 const esc = s => String(s).replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
 
-// Projections are a big payload and barely move within a week, so fetch them once per week.
+// Projections are a big payload, but Sleeper revises them during the day — most importantly
+// when inactives land and a scratched starter's projection drops to zero. Cache, but expire.
+const PROJ_TTL = 10 * 60 * 1000;
 const projCache = {};
 function projections(season, week, scoring){
   const key = season + '-' + week;
+  if (projCache[key] && Date.now() - projCache[key].at > PROJ_TTL) delete projCache[key];
   if (!projCache[key]) {
     const pos = ['QB','RB','WR','TE','K','DEF'].map(p => 'position[]=' + p).join('&');
-    projCache[key] = get(`/projections/nfl/${season}/${week}?season_type=regular&${pos}&order_by=ppr`)
-      .catch(e => { delete projCache[key]; throw e; });
+    projCache[key] = { at: Date.now(), rows: get(`/projections/nfl/${season}/${week}?season_type=regular&${pos}&order_by=ppr`)
+      .catch(e => { delete projCache[key]; throw e; }) };
   }
-  return projCache[key].then(rows => Object.fromEntries(rows.map(r => [r.player_id, {
+  return projCache[key].rows.then(rows => Object.fromEntries(rows.map(r => [r.player_id, {
     team: r.team || r.player.team,
     // Score each projection with THIS league's rules rather than Sleeper's generic PPR total.
     pts: Object.entries(scoring).reduce((s, [k, v]) => s + v * (r.stats[k] || 0), 0)
