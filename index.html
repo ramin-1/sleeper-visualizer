@@ -32,6 +32,7 @@
   .team{display:flex;align-items:center;gap:9px;min-width:150px}
   .team img{width:26px;height:26px;border-radius:6px;background:var(--line);flex:none}
   .team small{display:block;color:var(--dim);font-size:11.5px}
+  .uname{font-size:11px;opacity:.8}
   .name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:190px}
   .pill{display:inline-block;min-width:20px;text-align:center;padding:2px 7px;border-radius:5px;
     font-size:12px;font-weight:700}
@@ -205,11 +206,15 @@ async function load(leagueId, week, mode){
     const add = (r.h2h === 'W' ? 1 : 0) + (r.med === 'W' ? 1 : 0);
     const sub = (r.h2h === 'L' ? 1 : 0) + (r.med === 'L' ? 1 : 0);
     const color = r.med === 'W' ? 'var(--win)' : r.med === 'L' ? 'var(--loss)' : 'var(--tie)';
+    // Half this league sets no team name, so their row already shows the username — don't repeat it.
+    const shown = teamName(r.roster_id);
+    const uname = u.display_name && u.display_name.trim() !== shown.trim() ? u.display_name : '';
     return `<tr class="${i === half ? 'cut' : ''}">
       <td class="num dim">${i+1}</td>
       <td><div class="team">
         ${u.avatar ? `<img src="https://sleepercdn.com/avatars/thumbs/${esc(u.avatar)}" alt="" onerror="this.remove()">` : ''}
-        <div><div class="name">${esc(teamName(r.roster_id))}</div>
+        <div><div class="name">${esc(shown)}</div>
+        ${uname ? `<small class="uname">${esc(uname)}</small>` : ''}
         <small>${s.wins||0}-${s.losses||0}${s.ties ? '-'+s.ties : ''} &rarr; ${(s.wins||0)+add}-${(s.losses||0)+sub}${s.ties ? '-'+s.ties : ''}</small></div>
       </div></td>
       <td class="num ${useProj ? 'dim' : 'lead'}">${fmt(r.live)}</td>
