@@ -13,9 +13,12 @@ the top half banks an extra win, the bottom half an extra loss.
   pace as the game clock runs down. Matches the number Sleeper displays to the cent.
 
 Click any team to expand their starting lineup: each slot, the player's game
-status, points banked, and their live projection — green if they are now
-projected above their pre-game number, red if below. Expanded rows survive the
-auto-refresh.
+status, their stat line, points banked, and their live projection — green if they
+are now projected above their pre-game number, red if below. Expanded rows
+survive the auto-refresh.
+
+The team projected to finish first is crowned as the week's leader, since first
+place each week pays a $10 bonus.
 
 Projections are scored with your league's own `scoring_settings`, not a
 generic PPR total.

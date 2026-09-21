@@ -5,7 +5,7 @@
 <style>
   :root{
     --bg:#0a0e18; --card:#121a2b; --line:#1f2a40; --txt:#e8edf7; --dim:#8494b0;
-    --win:#22c55e; --loss:#ef4444; --tie:#f59e0b; --accent:#38bdf8;
+    --win:#22c55e; --loss:#ef4444; --tie:#f59e0b; --accent:#38bdf8; --gold:#fbbf24;
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--txt);
@@ -33,7 +33,10 @@
   .team img{width:26px;height:26px;border-radius:6px;background:var(--line);flex:none}
   .team small{display:block;color:var(--dim);font-size:11.5px}
   .uname{font-size:11px;opacity:.8}
-  .name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:190px}
+  .name{font-weight:600;display:flex;align-items:center;max-width:210px}
+  /* Only the team name truncates; the caret, crown and bonus pill keep their space. */
+  .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+  .caret,.crown,.bonus{flex:none}
   .pill{display:inline-block;min-width:20px;text-align:center;padding:2px 7px;border-radius:5px;
     font-size:12px;font-weight:700}
   .W{background:rgba(34,197,94,.16);color:var(--win)}
@@ -45,6 +48,16 @@
   .gap{font-size:12.5px;font-weight:600}
   .lead{font-weight:700}
   .dim{color:var(--dim)}
+  tr.king>td{background:linear-gradient(90deg,rgba(251,191,36,.14),rgba(251,191,36,.04) 55%,transparent)}
+  tr.king>td:first-child{box-shadow:inset 3px 0 0 var(--gold);color:var(--gold)}
+  tr.king .name{color:#fde68a}
+  tr.row.king:hover>td{background:linear-gradient(90deg,rgba(251,191,36,.2),rgba(251,191,36,.07) 55%,transparent)}
+  .crown{margin-right:3px}
+  .bonus{display:inline-block;margin-left:5px;padding:1px 5px;border-radius:999px;vertical-align:1px;
+    background:rgba(251,191,36,.18);color:var(--gold);font-size:10px;font-weight:800;letter-spacing:.03em}
+  /* Wraps rather than truncating: nowrap here forces the whole table wider than a phone,
+     and Sleeper's own stat lines wrap too. */
+  .pl-stats{color:var(--dim);font-size:11px;margin-top:1px}
   tr.row{cursor:pointer}
   tr.row:hover td{background:#162034}
   .caret{display:inline-block;width:10px;color:var(--dim);font-size:10px;transition:transform .12s}
@@ -67,15 +80,15 @@
   .pl-nums span.down{color:var(--loss)}
   .err{color:var(--loss)}
   .tw{overflow-x:auto}
-  @media(max-width:760px){.hide-s{display:none}.name{max-width:120px}}
+  @media(max-width:760px){.hide-s{display:none}.name{max-width:150px}}
   @media(max-width:560px){
     .hide-xs{display:none}
     td,th{padding:6px 4px}
     th{white-space:normal}
     .team{min-width:0;gap:6px}
     .team img{width:22px;height:22px}
-    .name{max-width:100px}
-    .track{min-width:52px}
+    .name{max-width:112px}
+    .track{min-width:44px}
     .pl{gap:7px;padding:7px 2px}
     .pl-img{width:28px;height:28px}
     .pl-slot{width:32px}
@@ -129,6 +142,29 @@ function secondsLeftByTeam(games){
     if (m.away_team) out[m.away_team] = left;
   }
   return out;
+}
+
+// Sleeper's stat line, in their display order. [key, pairedKey, label, showWhenZero]
+// A paired key renders "20/22 CMP"; otherwise "287 YD".
+const STAT_LINE = [
+  ['pass_cmp','pass_att','CMP'], ['pass_yd',null,'YD'], ['pass_td',null,'TD'], ['pass_int',null,'INT'],
+  ['rush_att',null,'CAR'], ['rush_yd',null,'YD'], ['rush_td',null,'TD'],
+  ['rec','rec_tgt','REC'], ['rec_yd',null,'YD'], ['rec_td',null,'TD'],
+  ['fum_lost',null,'FUM LOST'],
+  ['fgm','fga','FG'], ['xpm','xpa','XP'],
+  ['pts_allow',null,'PTS ALLOW',true], ['yds_allow',null,'YDS ALLOW',true], ['sack',null,'SACK'],
+  ['int',null,'INT'], ['ff',null,'FF'], ['fum_rec',null,'FUM REC'], ['def_td',null,'DEF TD'],
+  ['def_3_and_out',null,'3 & OUT'], ['def_4_and_stop',null,'4D STOP'], ['def_pass_def',null,'PD']
+];
+const trim = n => +(+n).toFixed(2);
+
+function statLine(st){
+  if (!st) return '';
+  return STAT_LINE.map(([key, pair, label, zero]) => {
+    const v = st[key];
+    if (v == null || (!v && !zero)) return null;
+    return pair ? `${trim(v)}/${trim(st[pair] || 0)} ${label}` : `${trim(v)} ${label}`;
+  }).filter(Boolean).join(', ');
 }
 
 const QUARTER = {'1':'1st','2':'2nd','3':'3rd','4':'4th','HALF':'Half','Halftime':'Half','OT':'OT','F':'Final','F/OT':'Final/OT'};
@@ -231,7 +267,7 @@ function projections(season, week, scoring){
 // Which rosters the user has expanded. Kept outside render so the 30s refresh doesn't collapse them.
 const expanded = new Set();
 
-function starterList(matchup, projById, secs, labels, slots){
+function starterList(matchup, projById, secs, labels, slots, stats){
   const pts = matchup.starters_points || [];
   return (matchup.starters || []).map((pid, i) => {
     const p = projById[pid];
@@ -240,6 +276,7 @@ function starterList(matchup, projById, secs, labels, slots){
     // Sleeper colours this number against the player's ORIGINAL projection: green if
     // they are now projected above it, red below.
     const trend = !p || Math.abs(live - p.pts) < 0.005 ? '' : live > p.pts ? 'up' : 'down';
+    const line = statLine(stats[pid]);
     const img = !p ? '' : p.pos === 'DEF'
       ? `https://sleepercdn.com/images/team_logos/nfl/${esc(String(p.team || '').toLowerCase())}.png`
       : `https://sleepercdn.com/content/nfl/players/thumb/${esc(pid)}.jpg`;
@@ -249,6 +286,7 @@ function starterList(matchup, projById, secs, labels, slots){
       <div class="pl-main">
         <div class="pl-name">${p ? esc(p.name) : 'Empty slot'}${p ? `<span>${esc(p.pos || '')} - ${esc(p.team || 'FA')}</span>` : ''}</div>
         <div class="pl-game">${p ? esc(labels[p.team] || 'No game this week') : ''}</div>
+        ${line ? `<div class="pl-stats">${esc(line)}</div>` : ''}
       </div>
       <div class="pl-nums">
         <b>${fmt(actual)}</b>
@@ -270,9 +308,10 @@ async function load(leagueId, week, mode){
   }
 
   // Projections/scores are best-effort: if either is unavailable, fall back to live points only.
-  const [projById, games] = await Promise.all([
+  const [projById, games, stats] = await Promise.all([
     projections(league.season, week, league.scoring_settings || {}).catch(() => ({})),
-    get(`/scores/nfl/regular/${league.season}/${week}`).catch(() => [])
+    get(`/scores/nfl/regular/${league.season}/${week}`).catch(() => []),
+    get(`/v1/stats/nfl/regular/${league.season}/${week}`).catch(() => ({}))
   ]);
   const secs = secondsLeftByTeam(games), labels = gameLabelByTeam(games);
   const proj = m => projectTeam(m, projById, secs);
@@ -306,15 +345,16 @@ async function load(leagueId, week, mode){
     const s = (rosterById[r.roster_id] || {}).settings || {};
     const add = (r.h2h === 'W' ? 1 : 0) + (r.med === 'W' ? 1 : 0);
     const sub = (r.h2h === 'L' ? 1 : 0) + (r.med === 'L' ? 1 : 0);
-    const color = r.med === 'W' ? 'var(--win)' : r.med === 'L' ? 'var(--loss)' : 'var(--tie)';
+    const king = i === 0;
+    const color = king ? 'var(--gold)' : r.med === 'W' ? 'var(--win)' : r.med === 'L' ? 'var(--loss)' : 'var(--tie)';
     // Half this league sets no team name, so their row already shows the username — don't repeat it.
     const shown = teamName(r.roster_id);
     const uname = u.display_name && u.display_name.trim() !== shown.trim() ? u.display_name : '';
-    return `<tr class="row ${i === half ? 'cut' : ''}" data-rid="${r.roster_id}">
+    return `<tr class="row ${king ? 'king' : ''} ${i === half ? 'cut' : ''}" data-rid="${r.roster_id}">
       <td class="num dim">${i+1}</td>
       <td><div class="team">
         ${u.avatar ? `<img src="https://sleepercdn.com/avatars/thumbs/${esc(u.avatar)}" alt="" onerror="this.remove()">` : ''}
-        <div><div class="name"><span class="caret">&#9654;</span> ${esc(shown)}</div>
+        <div><div class="name"><span class="caret">&#9654;</span> ${king ? '<span class="crown">&#128081;</span>' : ''}<span class="nm">${esc(shown)}</span>${king ? '<span class="bonus">$10</span>' : ''}</div>
         ${uname ? `<small class="uname">${esc(uname)}</small>` : ''}
         <small>${s.wins||0}-${s.losses||0}${s.ties ? '-'+s.ties : ''} &rarr; ${(s.wins||0)+add}-${(s.losses||0)+sub}${s.ties ? '-'+s.ties : ''}</small></div>
       </div></td>
@@ -324,13 +364,13 @@ async function load(leagueId, week, mode){
         <div class="fill" style="width:${pct(r.points)};background:${color};opacity:.55"></div>
         <div class="med" style="left:${pct(med)}"></div>
       </div></td>
-      <td class="num gap hide-xs" style="color:${color}">${r.gap > 0 ? '+' : ''}${fmt(r.gap)}</td>
+      <td class="num gap hide-xs" style="color:${r.med === 'W' ? 'var(--win)' : r.med === 'L' ? 'var(--loss)' : 'var(--tie)'}">${r.gap > 0 ? '+' : ''}${fmt(r.gap)}</td>
       <td class="num"><span class="pill ${r.med}">${r.med}</span></td>
       <td class="num hide-s">${r.h2h ? `<span class="pill ${r.h2h}">${r.h2h}</span>` : '<span class="dim">bye</span>'}</td>
       <td class="hide-s"><small class="dim">${r.oppRoster ? esc(teamName(r.oppRoster)) + ' ' + fmt(r.oppPoints) : ''}</small></td>
     </tr>
     <tr class="detail" data-rid="${r.roster_id}" ${expanded.has(r.roster_id) ? '' : 'hidden'}>
-      <td colspan="${cols}">${starterList(matchupById[r.roster_id] || {}, projById, secs, labels, slots)}</td>
+      <td colspan="${cols}">${starterList(matchupById[r.roster_id] || {}, projById, secs, labels, slots, stats || {})}</td>
     </tr>`;
   }).join('');
 
@@ -339,6 +379,7 @@ async function load(leagueId, week, mode){
       <div class="stat"><span>League</span><b>${esc(league.name)}</b></div>
       <div class="stat"><span>Week ${week} ${useProj ? 'projected' : 'live'} median</span><b style="color:var(--accent)">${fmt(med)}</b></div>
       <div class="stat"><span>Above the line</span><b>${rows.filter(r => r.med === 'W').length} of ${rows.length}</b></div>
+      <div class="stat"><span>&#128081; Week leader &middot; $10</span><b style="color:var(--gold)">${esc(teamName(rows[0].roster_id))}</b></div>
       <div class="stat"><span>Updated</span><b>${new Date().toLocaleTimeString()}</b></div>
     </div>
     ${medianOn ? '' : '<p class="note">Heads up: this league does not have Sleeper median scoring enabled, so the projected records below are hypothetical.</p>'}
@@ -428,6 +469,18 @@ function selftest(){
   a(near(liveProjection(4.50, 11.02, 287), 5.05), 'matches Sleeper: Price 5.05');
   a(liveProjection(0, 16.55, 3600) === 16.55, 'before kickoff it is just the projection');
   a(near(liveProjection(18.60, 12.67, 0), 18.60), 'at the whistle it is just the actual');
+
+  // Real stat lines, checked against what Sleeper's own matchup screen printed.
+  a(statLine({pass_cmp:20, pass_att:22, pass_yd:287, pass_td:2, rush_att:3, rush_yd:30, rush_td:1})
+    === '20/22 CMP, 287 YD, 2 TD, 3 CAR, 30 YD, 1 TD', 'QB line');
+  a(statLine({rush_att:13, rush_yd:52, rec:1, rec_tgt:2, rec_yd:8, fum_lost:1})
+    === '13 CAR, 52 YD, 1/2 REC, 8 YD, 1 FUM LOST', 'RB line with a fumble');
+  a(statLine({xpm:5, xpa:5}) === '5/5 XP', 'kicker line');
+  a(statLine({pts_allow:17, yds_allow:285, sack:4, def_3_and_out:2, def_4_and_stop:1, def_pass_def:4})
+    === '17 PTS ALLOW, 285 YDS ALLOW, 4 SACK, 2 3 & OUT, 1 4D STOP, 4 PD', 'defense line');
+  a(statLine({pts_allow:0, yds_allow:120, sack:0}) === '0 PTS ALLOW, 120 YDS ALLOW',
+    'a shutout still prints, a zero sack count does not');
+  a(statLine(null) === '' && statLine({}) === '', 'no stats yet, no line');
 
   const projById = {p1:{team:'AAA', pts:20}, p2:{team:'CCC', pts:18}, p3:{team:'KKK', pts:12}};
   const t = projectTeam({starters:['p1','p2','p3','0'], starters_points:[0, 14, 5, 0]}, projById, secs);
