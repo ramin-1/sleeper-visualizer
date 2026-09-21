@@ -12,10 +12,13 @@ the top half banks an extra win, the bottom half an extra loss.
   web app: each starter's pre-game projection blended toward their current scoring
   pace as the game clock runs down. Matches the number Sleeper displays to the cent.
 
-Click any team to expand their starting lineup: each slot, the player's game
-status, their stat line, points banked, and their live projection — green if they
-are now projected above their pre-game number, red if below. Expanded rows
-survive the auto-refresh.
+Click any team to expand their roster: starters with their slot, game status,
+stat line, points banked, and live projection — green if they are now projected
+above their pre-game number, red if below — followed by bench, injured reserve
+and taxi, dimmed since they do not score. Expanded rows survive the auto-refresh.
+
+If the page is redeployed while you have it open, a notice appears offering a
+reload. A tab left open all Sunday would otherwise keep running old code.
 
 The team projected to finish first is crowned as the week's leader, since first
 place each week pays a $10 bonus.

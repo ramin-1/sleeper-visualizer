@@ -58,6 +58,15 @@
   /* Wraps rather than truncating: nowrap here forces the whole table wider than a phone,
      and Sleeper's own stat lines wrap too. */
   .pl-stats{color:var(--dim);font-size:11px;margin-top:1px}
+  .pl-sec{font-size:10.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;
+    color:var(--dim);padding:12px 6px 5px;border-bottom:1px solid var(--line)}
+  /* Bench, IR and taxi do not score this week, so they sit back visually. */
+  .pl.bn{opacity:.62}
+  #newver{position:fixed;left:50%;transform:translateX(-50%);bottom:18px;z-index:9;
+    display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:10px;
+    background:#1a2337;border:1px solid var(--gold);color:var(--txt);font-size:13px;
+    box-shadow:0 6px 24px rgba(0,0,0,.45)}
+  #newver button{padding:5px 10px;font-size:12px}
   tr.row{cursor:pointer}
   tr.row:hover td{background:#162034}
   .caret{display:inline-block;width:10px;color:var(--dim);font-size:10px;transition:transform .12s}
@@ -111,6 +120,11 @@
   </form>
 
   <div id="out"></div>
+</div>
+
+<div id="newver" hidden>
+  <span>A newer version of this page is available.</span>
+  <button type="button" onclick="location.reload()">Reload</button>
 </div>
 
 <script>
@@ -276,33 +290,46 @@ function projections(season, week, scoring){
 // Which rosters the user has expanded. Kept outside render so the 30s refresh doesn't collapse them.
 const expanded = new Set();
 
-function starterList(matchup, projById, secs, labels, slots, stats){
-  const pts = matchup.starters_points || [];
-  return (matchup.starters || []).map((pid, i) => {
-    const p = projById[pid];
-    const actual = pts[i] || 0;
-    const live = p ? liveProjection(actual, p.pts, secs[p.team] ?? 0) : null;
-    // Sleeper colours this number against the player's ORIGINAL projection: green if
-    // they are now projected above it, red below.
-    const trend = !p || Math.abs(live - p.pts) < 0.005 ? '' : live > p.pts ? 'up' : 'down';
-    const line = statLine(stats[pid]);
-    const img = !p ? '' : p.pos === 'DEF'
-      ? `https://sleepercdn.com/images/team_logos/nfl/${esc(String(p.team || '').toLowerCase())}.png`
-      : `https://sleepercdn.com/content/nfl/players/thumb/${esc(pid)}.jpg`;
-    return `<div class="pl">
-      ${img ? `<img class="pl-img" src="${img}" alt="" onerror="this.remove()">` : ''}
-      <div class="pl-slot">${esc(slots[i] || '')}</div>
-      <div class="pl-main">
-        <div class="pl-name">${p ? esc(p.name) : 'Empty slot'}${p ? `<span>${esc(p.pos || '')} - ${esc(p.team || 'FA')}</span>` : ''}</div>
-        <div class="pl-game">${p ? esc(labels[p.team] || 'No game this week') : ''}</div>
-        ${line ? `<div class="pl-stats">${esc(line)}</div>` : ''}
-      </div>
-      <div class="pl-nums">
-        <b>${fmt(actual)}</b>
-        ${live == null ? '' : `<span class="${trend}">${fmt(live)}</span>`}
-      </div>
-    </div>`;
-  }).join('');
+function playerRow(pid, actual, slot, projById, secs, labels, stats, cls){
+  const p = projById[pid];
+  const live = p ? liveProjection(actual, p.pts, secs[p.team] ?? 0) : null;
+  // Sleeper colours this number against the player's ORIGINAL projection: green if
+  // they are now projected above it, red below.
+  const trend = !p || Math.abs(live - p.pts) < 0.005 ? '' : live > p.pts ? 'up' : 'down';
+  const line = statLine(stats[pid]);
+  const img = !p ? '' : p.pos === 'DEF'
+    ? `https://sleepercdn.com/images/team_logos/nfl/${esc(String(p.team || '').toLowerCase())}.png`
+    : `https://sleepercdn.com/content/nfl/players/thumb/${esc(pid)}.jpg`;
+  return `<div class="pl ${cls}">
+    ${img ? `<img class="pl-img" src="${img}" alt="" onerror="this.remove()">` : ''}
+    <div class="pl-slot">${esc(slot)}</div>
+    <div class="pl-main">
+      <div class="pl-name">${p ? esc(p.name) : 'Empty slot'}${p ? `<span>${esc(p.pos || '')} - ${esc(p.team || 'FA')}</span>` : ''}</div>
+      <div class="pl-game">${p ? esc(labels[p.team] || 'No game this week') : ''}</div>
+      ${line ? `<div class="pl-stats">${esc(line)}</div>` : ''}
+    </div>
+    <div class="pl-nums">
+      <b>${fmt(actual)}</b>
+      ${live == null ? '' : `<span class="${trend}">${fmt(live)}</span>`}
+    </div>
+  </div>`;
+}
+
+// Starters first, then the sections that do not score: bench, IR, taxi.
+function lineup(matchup, roster, projById, secs, labels, slots, stats){
+  const sp = matchup.starters_points || [], pp = matchup.players_points || {};
+  const starters = matchup.starters || [];
+  const reserve = roster.reserve || [], taxi = roster.taxi || [];
+  const placed = new Set([...starters, ...reserve, ...taxi]);
+  const bench = (matchup.players || []).filter(id => !placed.has(id));
+  const section = (title, ids, slot) => ids.length
+    ? `<div class="pl-sec">${title}</div>` +
+      ids.map(id => playerRow(id, pp[id] || 0, slot, projById, secs, labels, stats, 'bn')).join('')
+    : '';
+  return starters.map((id, i) => playerRow(id, sp[i] || 0, slots[i] || '', projById, secs, labels, stats, '')).join('')
+    + section('Bench', bench, 'BN')
+    + section('Injured Reserve', reserve, 'IR')
+    + section('Taxi', taxi, 'TAXI');
 }
 
 async function load(leagueId, week, mode){
@@ -442,11 +469,25 @@ async function load(leagueId, week, mode){
     tr.className = `row ${i === 0 ? 'king' : ''} ${i === half ? 'cut' : ''} ${expanded.has(rid) ? 'open' : ''}`;
     tr.innerHTML = rowCells(r, i);
     dt.hidden = !expanded.has(rid);
-    dt.firstElementChild.innerHTML = starterList(matchupById[rid] || {}, projById, secs, labels, slots, stats || {});
+    dt.firstElementChild.innerHTML = lineup(matchupById[rid] || {}, rosterById[rid] || {}, projById, secs, labels, slots, stats || {});
     tbody.append(tr, dt);
   });
 
   keepScroll(scrollY);
+}
+
+// Watch for a redeploy: this page is meant to be left open all Sunday, and a tab
+// running yesterday's JavaScript looks exactly like a bug that was never fixed.
+let buildTag = null;
+async function checkBuild(){
+  if (!location.protocol.startsWith('http')) return;
+  try {
+    const r = await fetch(location.pathname, { method: 'HEAD', cache: 'no-store' });
+    const tag = r.headers.get('etag') || r.headers.get('last-modified');
+    if (!tag) return;
+    if (buildTag === null) buildTag = tag;
+    else if (tag !== buildTag) $('#newver').hidden = false;
+  } catch (e) { /* offline or blocked; try again next time */ }
 }
 
 async function boot(){
@@ -482,6 +523,8 @@ async function boot(){
   $('#wk').onchange = go;
   $('#mode').onchange = go;
   setInterval(() => { if (!document.hidden) go(); }, 30000);
+  checkBuild();
+  setInterval(() => { if (!document.hidden) checkBuild(); }, 300000);
   if ($('#lid').value) go();
 }
 
