@@ -352,18 +352,18 @@ async function load(leagueId, week, mode){
   const inProgress = Object.values(secs).some(v => v > 0 && v < 3600);
   const notStarted = Object.values(secs).filter(v => v === 3600).length;
 
-  const body = rows.map((r, i) => {
+  const rowCells = (r, i) => {
     const u = userById[(rosterById[r.roster_id] || {}).owner_id] || {};
     const s = (rosterById[r.roster_id] || {}).settings || {};
     const add = (r.h2h === 'W' ? 1 : 0) + (r.med === 'W' ? 1 : 0);
     const sub = (r.h2h === 'L' ? 1 : 0) + (r.med === 'L' ? 1 : 0);
     const king = i === 0;
     const color = king ? 'var(--gold)' : r.med === 'W' ? 'var(--win)' : r.med === 'L' ? 'var(--loss)' : 'var(--tie)';
+    const gapColor = r.med === 'W' ? 'var(--win)' : r.med === 'L' ? 'var(--loss)' : 'var(--tie)';
     // Half this league sets no team name, so their row already shows the username — don't repeat it.
     const shown = teamName(r.roster_id);
     const uname = u.display_name && u.display_name.trim() !== shown.trim() ? u.display_name : '';
-    return `<tr class="row ${king ? 'king' : ''} ${i === half ? 'cut' : ''}" data-rid="${r.roster_id}">
-      <td class="num dim">${i+1}</td>
+    return `<td class="num dim">${i+1}</td>
       <td><div class="team">
         ${u.avatar ? `<img src="https://sleepercdn.com/avatars/thumbs/${esc(u.avatar)}" alt="" onerror="this.remove()">` : ''}
         <div><div class="name"><span class="caret">&#9654;</span> ${king ? '<span class="crown">&#128081;</span>' : ''}<span class="nm">${esc(shown)}</span>${king ? '<span class="bonus">$10</span>' : ''}</div>
@@ -376,48 +376,77 @@ async function load(leagueId, week, mode){
         <div class="fill" style="width:${pct(r.points)};background:${color};opacity:.55"></div>
         <div class="med" style="left:${pct(med)}"></div>
       </div></td>
-      <td class="num gap hide-xs" style="color:${r.med === 'W' ? 'var(--win)' : r.med === 'L' ? 'var(--loss)' : 'var(--tie)'}">${r.gap > 0 ? '+' : ''}${fmt(r.gap)}</td>
+      <td class="num gap hide-xs" style="color:${gapColor}">${r.gap > 0 ? '+' : ''}${fmt(r.gap)}</td>
       <td class="num"><span class="pill ${r.med}">${r.med}</span></td>
       <td class="num hide-s">${r.h2h ? `<span class="pill ${r.h2h}">${r.h2h}</span>` : '<span class="dim">bye</span>'}</td>
-      <td class="hide-s"><small class="dim">${r.oppRoster ? esc(teamName(r.oppRoster)) + ' ' + fmt(r.oppPoints) : ''}</small></td>
-    </tr>
-    <tr class="detail" data-rid="${r.roster_id}" ${expanded.has(r.roster_id) ? '' : 'hidden'}>
-      <td colspan="${cols}">${starterList(matchupById[r.roster_id] || {}, projById, secs, labels, slots, stats || {})}</td>
-    </tr>`;
-  }).join('');
+      <td class="hide-s"><small class="dim">${r.oppRoster ? esc(teamName(r.oppRoster)) + ' ' + fmt(r.oppPoints) : ''}</small></td>`;
+  };
 
-  const scrollY = window.scrollY;
-  out.innerHTML = `
+  const notes = [
+    medianOn ? '' : 'Heads up: this league does not have Sleeper median scoring enabled, so the projected records below are hypothetical.',
+    mode === 'proj' && !projOk ? 'No projections available for this week — showing live points instead.' : '',
+    useProj && inProgress ? 'Projected uses Sleeper&rsquo;s own live formula &mdash; each starter&rsquo;s pre-game projection blended toward their current pace as the clock runs down.' : '',
+    !useProj && notStarted ? `${notStarted} teams have not kicked off yet — switch to Projected final to see the likely cut line.` : ''
+  ].filter(Boolean).map(t => `<p class="note">${t}</p>`).join('');
+
+  // The shell is built once and then only mutated. Rebuilding it on every refresh is what
+  // cost the reader their scroll position: rows are now moved into rank order, never
+  // destroyed, so the document height never changes underneath them.
+  const sig = [leagueId, week, mode, projOk, useProj, cols, rows.length].join('|');
+  if (out.dataset.sig !== sig) {
+    out.dataset.sig = sig;
+    out.innerHTML = `
     <div class="bar-head">
-      <div class="stat"><span>League</span><b>${esc(league.name)}</b></div>
-      <div class="stat"><span>Week ${week} ${useProj ? 'projected' : 'live'} median</span><b style="color:var(--accent)">${fmt(med)}</b></div>
-      <div class="stat"><span>Above the line</span><b>${rows.filter(r => r.med === 'W').length} of ${rows.length}</b></div>
-      <div class="stat"><span>&#128081; Week leader &middot; $10</span><b style="color:var(--gold)">${esc(teamName(rows[0].roster_id))}</b></div>
-      <div class="stat"><span>Updated</span><b>${new Date().toLocaleTimeString()}</b></div>
+      <div class="stat"><span>League</span><b id="s-league"></b></div>
+      <div class="stat"><span>Week ${week} ${useProj ? 'projected' : 'live'} median</span><b id="s-med" style="color:var(--accent)"></b></div>
+      <div class="stat"><span>Above the line</span><b id="s-above"></b></div>
+      <div class="stat"><span>&#128081; Week leader &middot; $10</span><b id="s-king" style="color:var(--gold)"></b></div>
+      <div class="stat"><span>Updated</span><b id="s-upd"></b></div>
     </div>
-    ${medianOn ? '' : '<p class="note">Heads up: this league does not have Sleeper median scoring enabled, so the projected records below are hypothetical.</p>'}
-    ${mode === 'proj' && !projOk ? '<p class="note">No projections available for this week — showing live points instead.</p>' : ''}
-    ${useProj && inProgress ? '<p class="note">Projected uses Sleeper&rsquo;s own live formula &mdash; each starter&rsquo;s pre-game projection blended toward their current pace as the clock runs down.</p>' : ''}
-    ${!useProj && notStarted ? `<p class="note">${notStarted} teams have not kicked off yet — switch to Projected final to see the likely cut line.</p>` : ''}
+    <div id="notes"></div>
     <div class="tw"><table id="tbl"><thead><tr>
       <th></th><th>Team &rarr; projected record</th><th class="num ${liveCls}">Live</th>
       ${projOk ? `<th class="num ${projCls}">Proj</th>` : ''}
       <th>vs ${useProj ? 'projected' : 'live'} median</th><th class="num hide-xs">Gap</th><th class="num">Med</th>
       <th class="num hide-s">H2H</th><th class="hide-s">Opponent</th>
-    </tr></thead><tbody>${body}</tbody></table></div>`;
+    </tr></thead><tbody></tbody></table></div>`;
+  }
+
+  const scrollY = window.scrollY;
+  out.querySelector('#s-league').textContent = league.name;
+  out.querySelector('#s-med').textContent = fmt(med);
+  out.querySelector('#s-above').textContent = `${rows.filter(r => r.med === 'W').length} of ${rows.length}`;
+  out.querySelector('#s-king').textContent = teamName(rows[0].roster_id);
+  out.querySelector('#s-upd').textContent = new Date().toLocaleTimeString();
+  const notesEl = out.querySelector('#notes');
+  if (notesEl.innerHTML !== notes) notesEl.innerHTML = notes;
+
+  const tbody = out.querySelector('#tbl tbody');
+  rows.forEach((r, i) => {
+    const rid = r.roster_id;
+    let tr = tbody.querySelector(`tr.row[data-rid="${rid}"]`);
+    let dt = tbody.querySelector(`tr.detail[data-rid="${rid}"]`);
+    if (!tr) {
+      tr = document.createElement('tr');
+      tr.dataset.rid = rid;
+      dt = document.createElement('tr');
+      dt.className = 'detail';
+      dt.dataset.rid = rid;
+      dt.innerHTML = `<td colspan="${cols}"></td>`;
+      tr.onclick = () => {
+        expanded.has(rid) ? expanded.delete(rid) : expanded.add(rid);
+        tr.classList.toggle('open', expanded.has(rid));
+        dt.hidden = !expanded.has(rid);
+      };
+    }
+    tr.className = `row ${i === 0 ? 'king' : ''} ${i === half ? 'cut' : ''} ${expanded.has(rid) ? 'open' : ''}`;
+    tr.innerHTML = rowCells(r, i);
+    dt.hidden = !expanded.has(rid);
+    dt.firstElementChild.innerHTML = starterList(matchupById[rid] || {}, projById, secs, labels, slots, stats || {});
+    tbody.append(tr, dt);
+  });
 
   keepScroll(scrollY);
-
-  out.querySelectorAll('tr.row').forEach(tr => {
-    if (expanded.has(+tr.dataset.rid)) tr.classList.add('open');
-    tr.onclick = () => {
-      const rid = +tr.dataset.rid;
-      expanded.has(rid) ? expanded.delete(rid) : expanded.add(rid);
-      tr.classList.toggle('open', expanded.has(rid));
-      const d = out.querySelector(`tr.detail[data-rid="${rid}"]`);
-      if (d) d.hidden = !expanded.has(rid);
-    };
-  });
 }
 
 async function boot(){
