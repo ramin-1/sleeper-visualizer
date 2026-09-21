@@ -297,13 +297,16 @@ function starterList(matchup, projById, secs, labels, slots, stats){
 }
 
 async function load(leagueId, week, mode){
-  $('#out').innerHTML = '<p class="sub">Loading…</p>';
+  const out = $('#out');
+  // Only show the placeholder on a cold load. Blanking a rendered table on every refresh
+  // collapses the page height, which scrolls the reader back to the top.
+  if (!out.querySelector('table')) out.innerHTML = '<p class="sub">Loading…</p>';
   const [league, users, rosters, matchups] = await Promise.all([
     get(`/v1/league/${leagueId}`), get(`/v1/league/${leagueId}/users`),
     get(`/v1/league/${leagueId}/rosters`), get(`/v1/league/${leagueId}/matchups/${week}`)
   ]);
   if (!matchups || !matchups.length) {
-    $('#out').innerHTML = `<p class="sub">No matchups posted for week ${week} in ${esc(league.name)}.</p>`;
+    out.innerHTML = `<p class="sub">No matchups posted for week ${week} in ${esc(league.name)}.</p>`;
     return;
   }
 
@@ -374,7 +377,8 @@ async function load(leagueId, week, mode){
     </tr>`;
   }).join('');
 
-  $('#out').innerHTML = `
+  const scrollY = window.scrollY;
+  out.innerHTML = `
     <div class="bar-head">
       <div class="stat"><span>League</span><b>${esc(league.name)}</b></div>
       <div class="stat"><span>Week ${week} ${useProj ? 'projected' : 'live'} median</span><b style="color:var(--accent)">${fmt(med)}</b></div>
@@ -393,13 +397,15 @@ async function load(leagueId, week, mode){
       <th class="num hide-s">H2H</th><th class="hide-s">Opponent</th>
     </tr></thead><tbody>${body}</tbody></table></div>`;
 
-  $('#out').querySelectorAll('tr.row').forEach(tr => {
+  if (scrollY) window.scrollTo(0, scrollY);
+
+  out.querySelectorAll('tr.row').forEach(tr => {
     if (expanded.has(+tr.dataset.rid)) tr.classList.add('open');
     tr.onclick = () => {
       const rid = +tr.dataset.rid;
       expanded.has(rid) ? expanded.delete(rid) : expanded.add(rid);
       tr.classList.toggle('open', expanded.has(rid));
-      const d = $('#out').querySelector(`tr.detail[data-rid="${rid}"]`);
+      const d = out.querySelector(`tr.detail[data-rid="${rid}"]`);
       if (d) d.hidden = !expanded.has(rid);
     };
   });
@@ -420,7 +426,12 @@ async function boot(){
     localStorage.setItem('leagueId', id);
     localStorage.setItem('mode', mode);
     history.replaceState(null, '', `?league=${id}&week=${wk}&mode=${mode}`);
-    load(id, wk, mode).catch(e => $('#out').innerHTML = `<p class="err">${esc(e.message)}</p>`);
+    load(id, wk, mode).catch(e => {
+      // Keep whatever is on screen if a refresh fails; the Updated time stops advancing,
+      // which is the signal that it went stale.
+      if ($('#out').querySelector('table')) console.warn('refresh failed:', e.message);
+      else $('#out').innerHTML = `<p class="err">${esc(e.message)}</p>`;
+    });
   };
   $('#f').onsubmit = e => { e.preventDefault(); go(); };
   $('#wk').onchange = go;
