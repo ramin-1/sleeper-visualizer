@@ -238,6 +238,15 @@ function computeWeek(matchups, score){
   return { median: med, rows };
 }
 
+// Hold the reader's place across a re-render. Re-asserted on the next frame because
+// layout can still settle after the DOM write (an avatar that 404s removes itself).
+function keepScroll(y){
+  if (!y) return;
+  const restore = () => { if (Math.abs(window.scrollY - y) > 1) window.scrollTo(0, y); };
+  restore();
+  requestAnimationFrame(restore);
+}
+
 const fmt = n => n.toFixed(2);
 const esc = s => String(s).replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
 
@@ -397,7 +406,7 @@ async function load(leagueId, week, mode){
       <th class="num hide-s">H2H</th><th class="hide-s">Opponent</th>
     </tr></thead><tbody>${body}</tbody></table></div>`;
 
-  if (scrollY) window.scrollTo(0, scrollY);
+  keepScroll(scrollY);
 
   out.querySelectorAll('tr.row').forEach(tr => {
     if (expanded.has(+tr.dataset.rid)) tr.classList.add('open');
@@ -420,12 +429,19 @@ async function boot(){
   $('#lid').value = p.get('league') || localStorage.getItem('leagueId') || '';
   $('#mode').value = p.get('mode') || localStorage.getItem('mode') || 'live';
 
+  // The browser ties a scroll position to each history entry and restores it on a state
+  // change; we manage it ourselves instead.
+  if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+
   const go = () => {
     const id = $('#lid').value.trim(), wk = $('#wk').value, mode = $('#mode').value;
     if (!id) return;
     localStorage.setItem('leagueId', id);
     localStorage.setItem('mode', mode);
-    history.replaceState(null, '', `?league=${id}&week=${wk}&mode=${mode}`);
+    // Only touch history when the URL actually changes. Rewriting it on every 30s refresh
+    // was handing the browser a reason to scroll back to the top.
+    const url = `?league=${id}&week=${wk}&mode=${mode}`;
+    if (location.search !== url) history.replaceState(null, '', url);
     load(id, wk, mode).catch(e => {
       // Keep whatever is on screen if a refresh fails; the Updated time stops advancing,
       // which is the signal that it went stale.
