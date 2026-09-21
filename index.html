@@ -67,6 +67,9 @@
     background:#1a2337;border:1px solid var(--gold);color:var(--txt);font-size:13px;
     box-shadow:0 6px 24px rgba(0,0,0,.45)}
   #newver button{padding:5px 10px;font-size:12px}
+  /* Must out-specify the #newver rule above: the UA's [hidden]{display:none} is only
+     (0,0,1,0) and loses to an id selector, so the banner would never hide. */
+  #newver[hidden]{display:none}
   tr.row{cursor:pointer}
   tr.row:hover td{background:#162034}
   .caret{display:inline-block;width:10px;color:var(--dim);font-size:10px;transition:transform .12s}
@@ -580,6 +583,14 @@ function selftest(){
   a(statLine({pts_allow:0, yds_allow:120, sack:0}) === '0 PTS ALLOW, 120 YDS ALLOW',
     'a shutout still prints, a zero sack count does not');
   a(statLine(null) === '' && statLine({}) === '', 'no stats yet, no line');
+
+  // Assert on the computed style, not the .hidden property: the property is honoured
+  // regardless, it is the painting that an id-specificity rule can silently override.
+  const banner = document.querySelector('#newver');
+  banner.hidden = false;
+  a(getComputedStyle(banner).display !== 'none', 'shown banner is painted');
+  banner.hidden = true;
+  a(getComputedStyle(banner).display === 'none', 'hidden banner is actually not painted');
 
   const projById = {p1:{team:'AAA', pts:20}, p2:{team:'CCC', pts:18}, p3:{team:'KKK', pts:12}};
   const t = projectTeam({starters:['p1','p2','p3','0'], starters_points:[0, 14, 5, 0]}, projById, secs);
