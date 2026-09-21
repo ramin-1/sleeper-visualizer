@@ -45,8 +45,42 @@
   .gap{font-size:12.5px;font-weight:600}
   .lead{font-weight:700}
   .dim{color:var(--dim)}
+  tr.row{cursor:pointer}
+  tr.row:hover td{background:#162034}
+  .caret{display:inline-block;width:10px;color:var(--dim);font-size:10px;transition:transform .12s}
+  tr.row.open .caret{transform:rotate(90deg)}
+  tr.detail[hidden]{display:none}
+  tr.detail>td{padding:0 8px 12px;background:#0d1423}
+  .pl{display:flex;align-items:center;gap:10px;padding:8px 6px;border-bottom:1px solid var(--line)}
+  .pl:last-child{border-bottom:0}
+  .pl-img{width:34px;height:34px;border-radius:50%;background:var(--line);object-fit:cover;flex:none}
+  .pl-slot{width:38px;flex:none;text-align:center;font-size:10px;font-weight:700;letter-spacing:.04em;
+    color:var(--dim);background:#1a2337;border-radius:4px;padding:3px 0}
+  .pl-main{flex:1;min-width:0}
+  .pl-name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .pl-name span{font-weight:400;color:var(--dim);font-size:11.5px;margin-left:5px}
+  .pl-game{color:var(--dim);font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .pl-nums{text-align:right;flex:none;font-variant-numeric:tabular-nums;min-width:72px}
+  .pl-nums b{display:block;font-size:14px}
+  .pl-nums span{font-size:12px;color:var(--dim)}
+  .pl-nums span.up{color:var(--win)}
+  .pl-nums span.down{color:var(--loss)}
   .err{color:var(--loss)}
+  .tw{overflow-x:auto}
   @media(max-width:760px){.hide-s{display:none}.name{max-width:120px}}
+  @media(max-width:560px){
+    .hide-xs{display:none}
+    td,th{padding:6px 4px}
+    th{white-space:normal}
+    .team{min-width:0;gap:6px}
+    .team img{width:22px;height:22px}
+    .name{max-width:100px}
+    .track{min-width:52px}
+    .pl{gap:7px;padding:7px 2px}
+    .pl-img{width:28px;height:28px}
+    .pl-slot{width:32px}
+    .pl-nums{min-width:58px}
+  }
 </style>
 
 <div class="wrap">
@@ -93,6 +127,33 @@ function secondsLeftByTeam(games){
     }
     if (m.home_team) out[m.home_team] = left;
     if (m.away_team) out[m.away_team] = left;
+  }
+  return out;
+}
+
+const QUARTER = {'1':'1st','2':'2nd','3':'3rd','4':'4th','HALF':'Half','Halftime':'Half','OT':'OT','F':'Final','F/OT':'Final/OT'};
+
+// "Final W 35-13 vs MIA" / "3:11 4th 24-7 @ ARI" / "Mon, 5:15 PM vs NYG", per team.
+function gameLabelByTeam(games){
+  const out = {};
+  for (const g of games || []) {
+    const m = g.metadata || {};
+    if (!m.home_team || !m.away_team) continue;
+    for (const home of [true, false]) {
+      const team = home ? m.home_team : m.away_team;
+      const at = (home ? 'vs ' : '@ ') + (home ? m.away_team : m.home_team);
+      if (g.status === 'pre_game') {
+        const d = new Date(m.date_time || g.start_time);
+        out[team] = (isNaN(d) ? '' : d.toLocaleString([], {weekday:'short', hour:'numeric', minute:'2-digit'}) + ' ') + at;
+        continue;
+      }
+      const mine = (home ? m.home_score : m.away_score) || 0;
+      const theirs = (home ? m.away_score : m.home_score) || 0;
+      const score = `${mine}-${theirs}`;
+      out[team] = (g.status === 'complete' || m.is_over || m.quarter === 'F' || m.quarter === 'F/OT')
+        ? `Final ${mine > theirs ? 'W' : mine < theirs ? 'L' : 'T'} ${score} ${at}`
+        : `${m.time_remaining || ''} ${QUARTER[m.quarter] || m.quarter || ''} ${score} ${at}`.replace(/\s+/g, ' ').trim();
+    }
   }
   return out;
 }
@@ -158,9 +219,43 @@ function projections(season, week, scoring){
   }
   return projCache[key].rows.then(rows => Object.fromEntries(rows.map(r => [r.player_id, {
     team: r.team || r.player.team,
+    pos: r.player.position,
+    // Sleeper shows team defenses by nickname ("Giants") and everyone else as "B. Purdy".
+    name: r.player.position === 'DEF' ? r.player.last_name
+        : `${(r.player.first_name || '').charAt(0)}. ${r.player.last_name}`,
     // Score each projection with THIS league's rules rather than Sleeper's generic PPR total.
     pts: Object.entries(scoring).reduce((s, [k, v]) => s + v * (r.stats[k] || 0), 0)
   }])));
+}
+
+// Which rosters the user has expanded. Kept outside render so the 30s refresh doesn't collapse them.
+const expanded = new Set();
+
+function starterList(matchup, projById, secs, labels, slots){
+  const pts = matchup.starters_points || [];
+  return (matchup.starters || []).map((pid, i) => {
+    const p = projById[pid];
+    const actual = pts[i] || 0;
+    const live = p ? liveProjection(actual, p.pts, secs[p.team] ?? 0) : null;
+    // Sleeper colours this number against the player's ORIGINAL projection: green if
+    // they are now projected above it, red below.
+    const trend = !p || Math.abs(live - p.pts) < 0.005 ? '' : live > p.pts ? 'up' : 'down';
+    const img = !p ? '' : p.pos === 'DEF'
+      ? `https://sleepercdn.com/images/team_logos/nfl/${esc(String(p.team || '').toLowerCase())}.png`
+      : `https://sleepercdn.com/content/nfl/players/thumb/${esc(pid)}.jpg`;
+    return `<div class="pl">
+      ${img ? `<img class="pl-img" src="${img}" alt="" onerror="this.remove()">` : ''}
+      <div class="pl-slot">${esc(slots[i] || '')}</div>
+      <div class="pl-main">
+        <div class="pl-name">${p ? esc(p.name) : 'Empty slot'}${p ? `<span>${esc(p.pos || '')} - ${esc(p.team || 'FA')}</span>` : ''}</div>
+        <div class="pl-game">${p ? esc(labels[p.team] || 'No game this week') : ''}</div>
+      </div>
+      <div class="pl-nums">
+        <b>${fmt(actual)}</b>
+        ${live == null ? '' : `<span class="${trend}">${fmt(live)}</span>`}
+      </div>
+    </div>`;
+  }).join('');
 }
 
 async function load(leagueId, week, mode){
@@ -175,10 +270,11 @@ async function load(leagueId, week, mode){
   }
 
   // Projections/scores are best-effort: if either is unavailable, fall back to live points only.
-  const [projById, secs] = await Promise.all([
+  const [projById, games] = await Promise.all([
     projections(league.season, week, league.scoring_settings || {}).catch(() => ({})),
-    get(`/scores/nfl/regular/${league.season}/${week}`).then(secondsLeftByTeam).catch(() => ({}))
+    get(`/scores/nfl/regular/${league.season}/${week}`).catch(() => [])
   ]);
+  const secs = secondsLeftByTeam(games), labels = gameLabelByTeam(games);
   const proj = m => projectTeam(m, projById, secs);
   const projOk = Object.keys(projById).length > 0;
   const useProj = mode === 'proj' && projOk;
@@ -196,6 +292,11 @@ async function load(leagueId, week, mode){
   const max = Math.max(...rows.map(r => r.points), med, 1);
   const pct = v => (v / max * 100).toFixed(2) + '%';
   const half = rows.length / 2;
+  // A phone has no room for both point columns; keep whichever the mode is ranking on.
+  const liveCls = useProj ? 'hide-xs' : '', projCls = useProj ? '' : 'hide-xs';
+  const slots = (league.roster_positions || []).filter(x => !['BN','IR','TAXI'].includes(x));
+  const matchupById = Object.fromEntries(matchups.map(m => [m.roster_id, m]));
+  const cols = projOk ? 9 : 8;
   const medianOn = league.settings.league_average_match === 1;
   const inProgress = Object.values(secs).some(v => v > 0 && v < 3600);
   const notStarted = Object.values(secs).filter(v => v === 3600).length;
@@ -209,24 +310,27 @@ async function load(leagueId, week, mode){
     // Half this league sets no team name, so their row already shows the username — don't repeat it.
     const shown = teamName(r.roster_id);
     const uname = u.display_name && u.display_name.trim() !== shown.trim() ? u.display_name : '';
-    return `<tr class="${i === half ? 'cut' : ''}">
+    return `<tr class="row ${i === half ? 'cut' : ''}" data-rid="${r.roster_id}">
       <td class="num dim">${i+1}</td>
       <td><div class="team">
         ${u.avatar ? `<img src="https://sleepercdn.com/avatars/thumbs/${esc(u.avatar)}" alt="" onerror="this.remove()">` : ''}
-        <div><div class="name">${esc(shown)}</div>
+        <div><div class="name"><span class="caret">&#9654;</span> ${esc(shown)}</div>
         ${uname ? `<small class="uname">${esc(uname)}</small>` : ''}
         <small>${s.wins||0}-${s.losses||0}${s.ties ? '-'+s.ties : ''} &rarr; ${(s.wins||0)+add}-${(s.losses||0)+sub}${s.ties ? '-'+s.ties : ''}</small></div>
       </div></td>
-      <td class="num ${useProj ? 'dim' : 'lead'}">${fmt(r.live)}</td>
-      ${projOk ? `<td class="num ${useProj ? 'lead' : 'dim'}">${fmt(projByRoster[r.roster_id])}</td>` : ''}
+      <td class="num ${liveCls} ${useProj ? 'dim' : 'lead'}">${fmt(r.live)}</td>
+      ${projOk ? `<td class="num ${projCls} ${useProj ? 'lead' : 'dim'}">${fmt(projByRoster[r.roster_id])}</td>` : ''}
       <td><div class="track">
         <div class="fill" style="width:${pct(r.points)};background:${color};opacity:.55"></div>
         <div class="med" style="left:${pct(med)}"></div>
       </div></td>
-      <td class="num gap" style="color:${color}">${r.gap > 0 ? '+' : ''}${fmt(r.gap)}</td>
+      <td class="num gap hide-xs" style="color:${color}">${r.gap > 0 ? '+' : ''}${fmt(r.gap)}</td>
       <td class="num"><span class="pill ${r.med}">${r.med}</span></td>
       <td class="num hide-s">${r.h2h ? `<span class="pill ${r.h2h}">${r.h2h}</span>` : '<span class="dim">bye</span>'}</td>
       <td class="hide-s"><small class="dim">${r.oppRoster ? esc(teamName(r.oppRoster)) + ' ' + fmt(r.oppPoints) : ''}</small></td>
+    </tr>
+    <tr class="detail" data-rid="${r.roster_id}" ${expanded.has(r.roster_id) ? '' : 'hidden'}>
+      <td colspan="${cols}">${starterList(matchupById[r.roster_id] || {}, projById, secs, labels, slots)}</td>
     </tr>`;
   }).join('');
 
@@ -241,12 +345,23 @@ async function load(leagueId, week, mode){
     ${mode === 'proj' && !projOk ? '<p class="note">No projections available for this week — showing live points instead.</p>' : ''}
     ${useProj && inProgress ? '<p class="note">Projected uses Sleeper&rsquo;s own live formula &mdash; each starter&rsquo;s pre-game projection blended toward their current pace as the clock runs down.</p>' : ''}
     ${!useProj && notStarted ? `<p class="note">${notStarted} teams have not kicked off yet — switch to Projected final to see the likely cut line.</p>` : ''}
-    <table><thead><tr>
-      <th></th><th>Team &rarr; projected record</th><th class="num">Live</th>
-      ${projOk ? '<th class="num">Proj</th>' : ''}
-      <th>vs ${useProj ? 'projected' : 'live'} median</th><th class="num">Gap</th><th class="num">Med</th>
+    <div class="tw"><table id="tbl"><thead><tr>
+      <th></th><th>Team &rarr; projected record</th><th class="num ${liveCls}">Live</th>
+      ${projOk ? `<th class="num ${projCls}">Proj</th>` : ''}
+      <th>vs ${useProj ? 'projected' : 'live'} median</th><th class="num hide-xs">Gap</th><th class="num">Med</th>
       <th class="num hide-s">H2H</th><th class="hide-s">Opponent</th>
-    </tr></thead><tbody>${body}</tbody></table>`;
+    </tr></thead><tbody>${body}</tbody></table></div>`;
+
+  $('#out').querySelectorAll('tr.row').forEach(tr => {
+    if (expanded.has(+tr.dataset.rid)) tr.classList.add('open');
+    tr.onclick = () => {
+      const rid = +tr.dataset.rid;
+      expanded.has(rid) ? expanded.delete(rid) : expanded.add(rid);
+      tr.classList.toggle('open', expanded.has(rid));
+      const d = $('#out').querySelector(`tr.detail[data-rid="${rid}"]`);
+      if (d) d.hidden = !expanded.has(rid);
+    };
+  });
 }
 
 async function boot(){

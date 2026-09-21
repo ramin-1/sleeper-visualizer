@@ -12,6 +12,11 @@ the top half banks an extra win, the bottom half an extra loss.
   web app: each starter's pre-game projection blended toward their current scoring
   pace as the game clock runs down. Matches the number Sleeper displays to the cent.
 
+Click any team to expand their starting lineup: each slot, the player's game
+status, points banked, and their live projection — green if they are now
+projected above their pre-game number, red if below. Expanded rows survive the
+auto-refresh.
+
 Projections are scored with your league's own `scoring_settings`, not a
 generic PPR total.
 
