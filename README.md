@@ -7,6 +7,9 @@ Live league-median standings for a Sleeper fantasy football league.
 Enter a league ID and see the current week sorted against the league median —
 the top half banks an extra win, the bottom half an extra loss.
 
+Click the **Live** or **Proj** column header to choose what the standings rank on
+(on a phone, tap the one visible header to swap):
+
 - **Live points** — where the cut line sits right now.
 - **Projected final** — Sleeper's own live projection formula, ported from their
   web app: each starter's pre-game projection blended toward their current scoring
