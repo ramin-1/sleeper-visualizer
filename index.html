@@ -62,6 +62,12 @@
     color:var(--dim);padding:12px 6px 5px;border-bottom:1px solid var(--line)}
   /* Bench, IR and taxi do not score this week, so they sit back visually. */
   .pl.bn{opacity:.62}
+  /* A player whose game is being played right now. */
+  .pl.ingame{background:rgba(45,212,191,.09);box-shadow:inset 3px 0 0 #2dd4bf}
+  .pl-prog{position:relative;height:3px;max-width:220px;margin:5px 14px 4px 0;
+    background:var(--line);border-radius:2px}
+  .pl-prog i{position:absolute;inset:0 auto 0 0;background:#f5a524;border-radius:2px}
+  .pl-prog span{position:absolute;top:50%;transform:translate(-50%,-50%);font-size:11px;line-height:1}
   #newver{position:fixed;left:50%;transform:translateX(-50%);bottom:18px;z-index:9;
     display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:10px;
     background:#1a2337;border:1px solid var(--gold);color:var(--txt);font-size:13px;
@@ -296,8 +302,11 @@ function projections(season, week, scoring){
 // Which rosters the user has expanded. Kept outside render so the 30s refresh doesn't collapse them.
 const expanded = new Set();
 
-function playerRow(pid, actual, slot, projById, secs, labels, stats, cls){
+function playerRow(pid, actual, slot, projById, secs, labels, stats, cls, playing){
   const p = projById[pid];
+  const inGame = !!p && playing.has(p.team);
+  // How far through the game they are, for the progress line: 3600s is a full game.
+  const done = inGame ? Math.min(100, Math.max(0, 100 - (secs[p.team] ?? 3600) / 36)).toFixed(1) : 0;
   const live = p ? liveProjection(actual, p.pts, secs[p.team] ?? 0) : null;
   // Sleeper colours this number against the player's ORIGINAL projection: green if
   // they are now projected above it, red below.
@@ -306,11 +315,12 @@ function playerRow(pid, actual, slot, projById, secs, labels, stats, cls){
   const img = !p ? '' : p.pos === 'DEF'
     ? `https://sleepercdn.com/images/team_logos/nfl/${esc(String(p.team || '').toLowerCase())}.png`
     : `https://sleepercdn.com/content/nfl/players/thumb/${esc(pid)}.jpg`;
-  return `<div class="pl ${cls}">
+  return `<div class="pl ${cls} ${inGame ? 'ingame' : ''}">
     ${img ? `<img class="pl-img" src="${img}" alt="" onerror="this.remove()">` : ''}
     <div class="pl-slot">${esc(slot)}</div>
     <div class="pl-main">
       <div class="pl-name">${p ? esc(p.name) : 'Empty slot'}${p ? `<span>${esc(p.pos || '')} - ${esc(p.team || 'FA')}</span>` : ''}</div>
+      ${inGame ? `<div class="pl-prog"><i style="width:${done}%"></i><span style="left:${done}%">&#127944;</span></div>` : ''}
       <div class="pl-game">${p ? esc(labels[p.team] || 'No game this week') : ''}</div>
       ${line ? `<div class="pl-stats">${esc(line)}</div>` : ''}
     </div>
@@ -322,7 +332,7 @@ function playerRow(pid, actual, slot, projById, secs, labels, stats, cls){
 }
 
 // Starters first, then the sections that do not score: bench, IR, taxi.
-function lineup(matchup, roster, projById, secs, labels, slots, stats){
+function lineup(matchup, roster, projById, secs, labels, slots, stats, playing){
   const sp = matchup.starters_points || [], pp = matchup.players_points || {};
   const starters = matchup.starters || [];
   const reserve = roster.reserve || [], taxi = roster.taxi || [];
@@ -330,9 +340,9 @@ function lineup(matchup, roster, projById, secs, labels, slots, stats){
   const bench = (matchup.players || []).filter(id => !placed.has(id));
   const section = (title, ids, slot) => ids.length
     ? `<div class="pl-sec">${title}</div>` +
-      ids.map(id => playerRow(id, pp[id] || 0, slot, projById, secs, labels, stats, 'bn')).join('')
+      ids.map(id => playerRow(id, pp[id] || 0, slot, projById, secs, labels, stats, 'bn', playing)).join('')
     : '';
-  return starters.map((id, i) => playerRow(id, sp[i] || 0, slots[i] || '', projById, secs, labels, stats, '')).join('')
+  return starters.map((id, i) => playerRow(id, sp[i] || 0, slots[i] || '', projById, secs, labels, stats, '', playing)).join('')
     + section('Bench', bench, 'BN')
     + section('Injured Reserve', reserve, 'IR')
     + section('Taxi', taxi, 'TAXI');
@@ -359,6 +369,8 @@ async function load(leagueId, week, mode){
     get(`/v1/stats/nfl/regular/${league.season}/${week}`).catch(() => ({}))
   ]);
   const secs = secondsLeftByTeam(games), labels = gameLabelByTeam(games);
+  const playing = new Set((games || []).filter(g => g.status === 'in_game')
+    .flatMap(g => [g.metadata?.home_team, g.metadata?.away_team]));
   const proj = m => projectTeam(m, projById, secs);
   const projOk = Object.keys(projById).length > 0;
   const useProj = mode === 'proj' && projOk;
@@ -477,7 +489,7 @@ async function load(leagueId, week, mode){
     tr.className = `row ${i === 0 ? 'king' : ''} ${i === half ? 'cut' : ''} ${expanded.has(rid) ? 'open' : ''}`;
     tr.innerHTML = rowCells(r, i);
     dt.hidden = !expanded.has(rid);
-    dt.firstElementChild.innerHTML = lineup(matchupById[rid] || {}, rosterById[rid] || {}, projById, secs, labels, slots, stats || {});
+    dt.firstElementChild.innerHTML = lineup(matchupById[rid] || {}, rosterById[rid] || {}, projById, secs, labels, slots, stats || {}, playing);
     tbody.append(tr, dt);
   });
 
