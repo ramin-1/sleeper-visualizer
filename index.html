@@ -61,9 +61,10 @@
   .pl-sec{font-size:10.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;
     color:var(--dim);padding:12px 6px 5px;border-bottom:1px solid var(--line)}
   /* Bench, IR and taxi do not score this week, so they sit back visually. */
-  .pl.bn{opacity:.62}
+  .side.bn{opacity:.62}
   /* A player whose game is being played right now. */
-  .pl.ingame{background:rgba(45,212,191,.09);box-shadow:inset 3px 0 0 #2dd4bf}
+  .side.ingame{background:rgba(45,212,191,.09);box-shadow:inset 3px 0 0 #2dd4bf}
+  .side.r.ingame{box-shadow:inset -3px 0 0 #2dd4bf}
   .pl-prog{position:relative;height:3px;max-width:220px;margin:5px 14px 4px 0;
     background:var(--line);border-radius:2px}
   .pl-prog i{position:absolute;inset:0 auto 0 0;background:#f5a524;border-radius:2px}
@@ -88,8 +89,31 @@
   tr.row.open .caret{transform:rotate(90deg)}
   tr.detail[hidden]{display:none}
   tr.detail>td{padding:0 8px 12px;background:#0d1423}
-  .pl{display:flex;align-items:center;gap:10px;padding:8px 6px;border-bottom:1px solid var(--line)}
-  .pl:last-child{border-bottom:0}
+  /* Head to head: my player | slot | their player, the opponent's side mirrored. */
+  .mu-head,.mu-row{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);gap:8px}
+  .mu-head{align-items:center;padding:12px 4px 12px;border-bottom:1px solid var(--line)}
+  .mu-row{align-items:stretch;border-bottom:1px solid var(--line)}
+  .mu-row .pl-slot{align-self:center}
+  .mu-team{display:flex;align-items:center;gap:10px;min-width:0;padding-bottom:8px}
+  .mu-team.r{flex-direction:row-reverse;text-align:right}
+  .mu-team.lead{box-shadow:inset 0 -3px 0 var(--win)}
+  .mu-team.trail{box-shadow:inset 0 -3px 0 var(--loss)}
+  .mu-team img{width:34px;height:34px;border-radius:50%;flex:none}
+  .mu-who{flex:1;min-width:0}
+  .mu-name{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  /* A username is one unbreakable word (jacksonwiseman1); truncate it like the team name
+     or it pushes the whole table wider than a phone. */
+  .mu-who small{display:block;color:var(--dim);font-size:11.5px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .mu-pts{flex:none;text-align:right;font-variant-numeric:tabular-nums}
+  .mu-team.r .mu-pts{text-align:left}
+  .mu-pts b{display:block;font-size:18px}
+  .mu-pts span{font-size:12px;color:var(--dim)}
+  .mu-vs{width:38px;text-align:center;font-size:11px;font-weight:800;color:var(--dim)}
+  .side{display:flex;align-items:center;gap:10px;padding:8px 6px;min-width:0}
+  .side.r{flex-direction:row-reverse;text-align:right}
+  .side.r .pl-nums{text-align:left}
+  .side.r .pl-prog{margin:5px 0 4px auto}
   .pl-img{width:34px;height:34px;border-radius:50%;background:var(--line);object-fit:cover;flex:none}
   .pl-slot{width:38px;flex:none;text-align:center;font-size:10px;font-weight:700;letter-spacing:.04em;
     color:var(--dim);background:#1a2337;border-radius:4px;padding:3px 0}
@@ -107,17 +131,24 @@
   @media(max-width:760px){.hide-s{display:none}.name{max-width:150px}}
   @media(max-width:560px){
     .hide-xs{display:none}
-    td,th{padding:6px 4px}
+    td,th{padding:6px 3px}
     th{white-space:normal}
     th .sort.on::after{content:' \21C4'}
     .team{min-width:0;gap:6px}
     .team img{width:22px;height:22px}
     .name{max-width:112px}
     .track{min-width:44px}
-    .pl{gap:7px;padding:7px 2px}
-    .pl-img{width:28px;height:28px}
-    .pl-slot{width:32px}
-    .pl-nums{min-width:58px}
+    /* Two rosters side by side on a phone: drop the headshots, let names and games wrap. */
+    .mu-head,.mu-row{gap:4px}
+    .side{gap:6px;padding:7px 2px}
+    .side .pl-img,.mu-team img{display:none}
+    .pl-slot,.mu-vs{width:32px}
+    .pl-nums{min-width:40px}
+    .pl-nums b{font-size:13px}
+    .pl-name{font-size:13px;white-space:normal}
+    .pl-name span{display:block;margin:0}
+    .pl-game{white-space:normal}
+    .mu-pts b{font-size:15px}
   }
 </style>
 
@@ -302,7 +333,8 @@ function projections(season, week, scoring){
 // Which rosters the user has expanded. Kept outside render so the 30s refresh doesn't collapse them.
 const expanded = new Set();
 
-function playerRow(pid, actual, slot, projById, secs, labels, stats, cls, playing){
+function playerCard(pid, actual, ctx, cls){
+  const { projById, secs, labels, stats, playing } = ctx;
   const p = projById[pid];
   const inGame = !!p && playing.has(p.team);
   // How far through the game they are, for the progress line: 3600s is a full game.
@@ -315,9 +347,8 @@ function playerRow(pid, actual, slot, projById, secs, labels, stats, cls, playin
   const img = !p ? '' : p.pos === 'DEF'
     ? `https://sleepercdn.com/images/team_logos/nfl/${esc(String(p.team || '').toLowerCase())}.png`
     : `https://sleepercdn.com/content/nfl/players/thumb/${esc(pid)}.jpg`;
-  return `<div class="pl ${cls} ${inGame ? 'ingame' : ''}">
+  return `<div class="side ${cls} ${inGame ? 'ingame' : ''}">
     ${img ? `<img class="pl-img" src="${img}" alt="" onerror="this.remove()">` : ''}
-    <div class="pl-slot">${esc(slot)}</div>
     <div class="pl-main">
       <div class="pl-name">${p ? esc(p.name) : 'Empty slot'}${p ? `<span>${esc(p.pos || '')} - ${esc(p.team || 'FA')}</span>` : ''}</div>
       ${inGame ? `<div class="pl-prog"><i style="width:${done}%"></i><span style="left:${done}%">&#127944;</span></div>` : ''}
@@ -331,21 +362,44 @@ function playerRow(pid, actual, slot, projById, secs, labels, stats, cls, playin
   </div>`;
 }
 
-// Starters first, then the sections that do not score: bench, IR, taxi.
-function lineup(matchup, roster, projById, secs, labels, slots, stats, playing){
+// One team's players split the way Sleeper lists them: starters (aligned with the league's
+// slots), then the sections that do not score — bench, IR, taxi.
+function rosterLists(matchup, roster){
   const sp = matchup.starters_points || [], pp = matchup.players_points || {};
   const starters = matchup.starters || [];
   const reserve = roster.reserve || [], taxi = roster.taxi || [];
   const placed = new Set([...starters, ...reserve, ...taxi]);
-  const bench = (matchup.players || []).filter(id => !placed.has(id));
-  const section = (title, ids, slot) => ids.length
-    ? `<div class="pl-sec">${title}</div>` +
-      ids.map(id => playerRow(id, pp[id] || 0, slot, projById, secs, labels, stats, 'bn', playing)).join('')
-    : '';
-  return starters.map((id, i) => playerRow(id, sp[i] || 0, slots[i] || '', projById, secs, labels, stats, '', playing)).join('')
-    + section('Bench', bench, 'BN')
-    + section('Injured Reserve', reserve, 'IR')
-    + section('Taxi', taxi, 'TAXI');
+  const scored = id => ({ id, pts: pp[id] || 0 });
+  return {
+    starters: starters.map((id, i) => ({ id, pts: sp[i] || 0 })),
+    bench: (matchup.players || []).filter(id => !placed.has(id)).map(scored),
+    reserve: reserve.map(scored),
+    taxi: taxi.map(scored)
+  };
+}
+
+function teamBox(t, side){
+  if (!t.rid) return `<div class="mu-team ${side}"><div class="mu-who dim">Bye week</div></div>`;
+  return `<div class="mu-team ${side} ${t.edge}">
+    ${t.avatar ? `<img src="https://sleepercdn.com/avatars/thumbs/${esc(t.avatar)}" alt="" onerror="this.remove()">` : ''}
+    <div class="mu-who"><div class="mu-name">${esc(t.name)}</div>${t.user ? `<small>${esc(t.user)}</small>` : ''}</div>
+    <div class="mu-pts"><b>${fmt(t.live)}</b><span>${fmt(t.proj)} proj</span></div>
+  </div>`;
+}
+
+// The expanded view: both teams' headers, then the two rosters side by side.
+function matchupView(me, opp, ctx){
+  const L = rosterLists(me.m, me.roster), R = rosterLists(opp.m || {}, opp.roster || {});
+  const card = (it, side, cls) => it ? playerCard(it.id, it.pts, ctx, `${side} ${cls}`) : `<div class="side ${side}"></div>`;
+  const rows = (a, b, slot, cls) => Array.from({ length: Math.max(a.length, b.length) }, (_, i) =>
+    `<div class="mu-row">${card(a[i], 'l', cls)}<div class="pl-slot">${esc(slot(i))}</div>${card(b[i], 'r', cls)}</div>`).join('');
+  const section = (title, a, b, slot) => a.length || b.length
+    ? `<div class="pl-sec">${title}</div>` + rows(a, b, () => slot, 'bn') : '';
+  return `<div class="mu-head">${teamBox(me, 'l')}<div class="mu-vs">VS</div>${teamBox(opp, 'r')}</div>`
+    + rows(L.starters, R.starters, i => ctx.slots[i] || '', '')
+    + section('Bench', L.bench, R.bench, 'BN')
+    + section('Injured Reserve', L.reserve, R.reserve, 'IR')
+    + section('Taxi', L.taxi, R.taxi, 'TAXI');
 }
 
 async function load(leagueId, week, mode){
@@ -396,6 +450,20 @@ async function load(leagueId, week, mode){
   const medianOn = league.settings.league_average_match === 1;
   const inProgress = Object.values(secs).some(v => v > 0 && v < 3600);
   const notStarted = Object.values(secs).filter(v => v === 3600).length;
+
+  const ctx = { projById, secs, labels, stats: stats || {}, playing, slots };
+  const teamSide = (id, edge) => {
+    if (id == null) return {};
+    const u = userById[(rosterById[id] || {}).owner_id] || {};
+    const name = teamName(id);
+    return {
+      rid: id, edge, name, avatar: u.avatar,
+      // Same rule as the table: only show the username when it isn't already the name.
+      user: u.display_name && u.display_name.trim() !== name.trim() ? u.display_name : '',
+      m: matchupById[id] || {}, roster: rosterById[id] || {},
+      live: (matchupById[id] || {}).points || 0, proj: projByRoster[id]
+    };
+  };
 
   const rowCells = (r, i) => {
     const u = userById[(rosterById[r.roster_id] || {}).owner_id] || {};
@@ -489,7 +557,9 @@ async function load(leagueId, week, mode){
     tr.className = `row ${i === 0 ? 'king' : ''} ${i === half ? 'cut' : ''} ${expanded.has(rid) ? 'open' : ''}`;
     tr.innerHTML = rowCells(r, i);
     dt.hidden = !expanded.has(rid);
-    dt.firstElementChild.innerHTML = lineup(matchupById[rid] || {}, rosterById[rid] || {}, projById, secs, labels, slots, stats || {}, playing);
+    // Underline whoever leads the head-to-head on the numbers the table is ranked by.
+    const edge = r.h2h === 'W' ? ['lead', 'trail'] : r.h2h === 'L' ? ['trail', 'lead'] : ['', ''];
+    dt.firstElementChild.innerHTML = matchupView(teamSide(rid, edge[0]), teamSide(r.oppRoster, edge[1]), ctx);
     tbody.append(tr, dt);
   });
 

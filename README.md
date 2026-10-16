@@ -15,7 +15,9 @@ Click the **Live** or **Proj** column header to choose what the standings rank o
   web app: each starter's pre-game projection blended toward their current scoring
   pace as the game clock runs down. Matches the number Sleeper displays to the cent.
 
-Click any team to expand their roster: starters with their slot, game status,
+Click any team to expand their matchup, laid out like Sleeper's: both teams' scores and
+projections up top, then their roster beside their opponent's — starters aligned by
+slot, each with game status,
 stat line, points banked, and live projection — green if they are now projected
 above their pre-game number, red if below — followed by bench, injured reserve
 and taxi, dimmed since they do not score. Expanded rows survive the auto-refresh.
