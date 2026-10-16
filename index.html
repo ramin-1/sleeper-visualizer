@@ -17,6 +17,12 @@
   input,select,button{background:var(--card);color:var(--txt);border:1px solid var(--line);
     border-radius:8px;padding:9px 12px;font:inherit}
   input{flex:1 1 220px;min-width:0}
+  #league{flex:1 1 220px;min-width:0}
+  .ghost{background:var(--card);color:var(--dim);border-color:var(--line);font-weight:400}
+  .link{all:unset;cursor:pointer;color:var(--accent)}
+  .link:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  #who,#msg{margin:-8px 0 16px}
+  #msg.err{color:var(--loss)}
   button{background:var(--accent);color:#04121c;border-color:transparent;font-weight:650;cursor:pointer}
   .bar-head{display:flex;flex-wrap:wrap;gap:12px 22px;align-items:baseline;
     background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:14px}
@@ -157,10 +163,14 @@
   <p class="sub">Live league-median race — top half banks an extra win, bottom half an extra loss.</p>
 
   <form id="f">
-    <input id="lid" placeholder="Sleeper league ID (e.g. 1125183277838565376)" required>
-    <select id="wk"></select>
-    <button>Load</button>
+    <select id="league" aria-label="League" hidden></select>
+    <button type="button" id="rm" class="ghost" title="Remove this saved league" aria-label="Remove this saved league" hidden>&#10005;</button>
+    <select id="wk" aria-label="Week"></select>
+    <input id="add" placeholder="Add your Sleeper username or a league ID" aria-label="Sleeper username or league ID">
+    <button>Add</button>
   </form>
+  <p id="who" class="sub" hidden></p>
+  <p id="msg" class="sub" hidden></p>
 
   <div id="out"></div>
 </div>
@@ -411,9 +421,10 @@ async function load(leagueId, week, mode){
     get(`/v1/league/${leagueId}`), get(`/v1/league/${leagueId}/users`),
     get(`/v1/league/${leagueId}/rosters`), get(`/v1/league/${leagueId}/matchups/${week}`)
   ]);
+  if (!league) throw new Error(`No Sleeper league with ID ${leagueId}.`);
   if (!matchups || !matchups.length) {
     out.innerHTML = `<p class="sub">No matchups posted for week ${week} in ${esc(league.name)}.</p>`;
-    return;
+    return league;
   }
 
   // Projections/scores are best-effort: if either is unavailable, fall back to live points only.
@@ -515,7 +526,8 @@ async function load(leagueId, week, mode){
   // and by the time it is refilled the browser has already clamped the offset to fit.
   const scrollY = window.scrollY;
   const sig = [leagueId, week, mode, projOk, useProj, cols, rows.length].join('|');
-  if (out.dataset.sig !== sig) {
+  // Also rebuild if the shell is gone (a "no matchups" message replaced it, say).
+  if (out.dataset.sig !== sig || !out.querySelector('#tbl')) {
     out.dataset.sig = sig;
     out.innerHTML = `
     <div class="bar-head">
@@ -570,6 +582,7 @@ async function load(leagueId, week, mode){
   });
 
   keepScroll(scrollY);
+  return league;
 }
 
 // Watch for a redeploy: this page is meant to be left open all Sunday, and a tab
@@ -586,36 +599,150 @@ async function checkBuild(){
   } catch (e) { /* offline or blocked; try again next time */ }
 }
 
+// Browser storage can be unavailable (private windows, blocked site data); the page must
+// still work, it just won't remember anything.
+// Plain values are stored as raw strings, lists as JSON. Never JSON-parse a league ID:
+// it is past the integer precision of a JS number and comes back silently changed.
+const ls = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} },
+  json(k, fallback) { try { return JSON.parse(localStorage.getItem(k)) ?? fallback; } catch { return fallback; } }
+};
+
+// A league ID is a long run of digits; anything else is treated as a Sleeper username.
+const isLeagueId = v => /^\d{10,}$/.test(v);
+
+async function leaguesFor(userId, season){
+  const list = await get(`/v1/user/${userId}/leagues/nfl/${season}`) || [];
+  return list.map(l => ({ id: l.league_id, name: l.name }));
+}
+
 async function boot(){
   const p = new URLSearchParams(location.search);
   const state = await get('/v1/state/nfl').catch(() => ({ week: 1 }));
+  const season = state.league_season || state.season;
   const cur = +(p.get('week') || state.week || 1);
   $('#wk').innerHTML = Array.from({length: 18}, (_, i) =>
     `<option value="${i+1}" ${i+1 === cur ? 'selected' : ''}>Week ${i+1}</option>`).join('');
-  $('#lid').value = p.get('league') || localStorage.getItem('leagueId') || '';
-  let mode = p.get('mode') || localStorage.getItem('mode') || 'live';
+  let mode = p.get('mode') || ls.get('mode') || 'live';
+
+  // Leagues come from two places: everything the saved Sleeper user is in (looked up fresh
+  // each visit, so new leagues just appear), and league IDs added or opened by hand —
+  // a friend's league, say — which are kept in the browser.
+  let user = ls.json('sleeperUser', null);          // { id, name }
+  let saved = ls.json('leagues', []);               // [{ id, name }]
+  let mine = user ? await leaguesFor(user.id, season).catch(() => []) : [];
+  let current = p.get('league') || ls.get('leagueId') || (mine[0] || saved[0] || {}).id || '';
+
+  const msg = (text, isErr) => {
+    $('#msg').textContent = text || '';
+    $('#msg').hidden = !text;
+    $('#msg').classList.toggle('err', !!isErr);
+  };
+
+  const render = () => {
+    const extra = saved.filter(l => !mine.some(m => m.id === l.id));
+    const opts = list => list.map(l => `<option value="${esc(l.id)}">${esc(l.name)}</option>`).join('');
+    $('#league').innerHTML =
+      (mine.length ? `<optgroup label="${esc('@' + user.name)}">${opts(mine)}</optgroup>` : '') +
+      (extra.length ? `<optgroup label="Saved leagues">${opts(extra)}</optgroup>` : '');
+    $('#league').hidden = !$('#league').options.length;
+    $('#league').value = current;
+    // Only hand-saved leagues can be removed; the user's own come back on the next lookup.
+    $('#rm').hidden = !extra.some(l => l.id === current);
+    $('#who').hidden = !user;
+    if (user) $('#who').innerHTML = `Showing leagues for @${esc(user.name)} &middot; <button type="button" class="link" id="forget">forget</button>`;
+    $('#add').placeholder = user ? 'Add a league ID, or another username' : 'Add your Sleeper username or a league ID';
+  };
+
+  // Any league that loads is kept, so a bookmarked or pasted friend's league stays in the list.
+  const remember = league => {
+    if (!league || mine.some(m => m.id === league.league_id)) return;
+    const hit = saved.find(l => l.id === league.league_id);
+    if (hit && hit.name === league.name) return;    // nothing changed; don't rebuild the menu every 30s
+    if (hit) hit.name = league.name; else saved.push({ id: league.league_id, name: league.name });
+    ls.set('leagues', JSON.stringify(saved));
+    render();
+  };
 
   // The browser ties a scroll position to each history entry and restores it on a state
   // change; we manage it ourselves instead.
   if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
 
   const go = () => {
-    const id = $('#lid').value.trim(), wk = $('#wk').value;
-    if (!id) return;
-    localStorage.setItem('leagueId', id);
-    localStorage.setItem('mode', mode);
+    const wk = $('#wk').value;
+    if (!current) {
+      $('#out').innerHTML = '';
+      msg('Add your Sleeper username to pick from your leagues, or paste a league ID.');
+      return;
+    }
+    ls.set('leagueId', current);
+    ls.set('mode', mode);
     // Only touch history when the URL actually changes. Rewriting it on every 30s refresh
     // was handing the browser a reason to scroll back to the top.
-    const url = `?league=${id}&week=${wk}&mode=${mode}`;
+    const url = `?league=${current}&week=${wk}&mode=${mode}`;
     if (location.search !== url) history.replaceState(null, '', url);
-    load(id, wk, mode).catch(e => {
+    const id = current;
+    load(id, wk, mode).then(league => { if (id === current) remember(league); }).catch(e => {
       // Keep whatever is on screen if a refresh fails; the Updated time stops advancing,
       // which is the signal that it went stale.
       if ($('#out').querySelector('table')) console.warn('refresh failed:', e.message);
       else $('#out').innerHTML = `<p class="err">${esc(e.message)}</p>`;
     });
   };
-  $('#f').onsubmit = e => { e.preventDefault(); go(); };
+
+  const choose = id => {
+    // Same league, but the lists may have changed (a username was just added), so redraw.
+    if (id === current) { render(); return go(); }
+    current = id;
+    expanded.clear();                               // roster ids 1-12 repeat across leagues
+    $('#out').innerHTML = '';
+    window.scrollTo(0, 0);
+    render();
+    go();
+  };
+
+  $('#f').onsubmit = async e => {
+    e.preventDefault();
+    const v = $('#add').value.trim();
+    if (!v) return;
+    msg('Looking that up…');
+    try {
+      if (isLeagueId(v)) {
+        const league = await get(`/v1/league/${v}`).catch(() => null);
+        if (!league || !league.league_id) throw new Error(`No Sleeper league with ID ${v}.`);
+        mine.some(m => m.id === league.league_id) || saved.some(l => l.id === league.league_id)
+          || (saved.push({ id: league.league_id, name: league.name }), ls.set('leagues', JSON.stringify(saved)));
+        msg('');
+        choose(league.league_id);
+      } else {
+        const u = await get(`/v1/user/${encodeURIComponent(v)}`).catch(() => null);
+        if (!u || !u.user_id) throw new Error(`No Sleeper user called “${v}”.`);
+        const found = await leaguesFor(u.user_id, season);
+        if (!found.length) throw new Error(`@${u.display_name || v} isn't in any ${season} leagues.`);
+        user = { id: u.user_id, name: u.display_name || v };
+        mine = found;
+        ls.set('sleeperUser', JSON.stringify(user));
+        msg('');
+        choose(mine.some(m => m.id === current) ? current : mine[0].id);
+      }
+      $('#add').value = '';
+    } catch (err) {
+      msg(err.message, true);
+    }
+  };
+  $('#league').onchange = () => choose($('#league').value);
+  $('#rm').onclick = () => {
+    saved = saved.filter(l => l.id !== current);
+    ls.set('leagues', JSON.stringify(saved));
+    choose((mine[0] || saved[0] || {}).id || '');
+  };
+  $('#who').addEventListener('click', e => {
+    if (e.target.id !== 'forget') return;
+    user = null; mine = [];
+    ls.set('sleeperUser', null);
+    choose(saved.some(l => l.id === current) ? current : (saved[0] || {}).id || '');
+  });
   $('#wk').onchange = go;
   // Delegated because the header is rebuilt whenever the mode changes.
   $('#out').addEventListener('click', e => {
@@ -629,10 +756,11 @@ async function boot(){
     mode = next;
     go();
   });
-  setInterval(() => { if (!document.hidden) go(); }, 30000);
+  setInterval(() => { if (!document.hidden && current) go(); }, 30000);
   checkBuild();
   setInterval(() => { if (!document.hidden) checkBuild(); }, 300000);
-  if ($('#lid').value) go();
+  render();
+  go();
 }
 
 function selftest(){

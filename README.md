@@ -31,9 +31,14 @@ place each week pays a $10 bonus.
 Projections are scored with your league's own `scoring_settings`, not a
 generic PPR total.
 
-Your league ID is the number in the Sleeper URL:
-`sleeper.com/leagues/<league id>/team`. It is remembered between visits, and the
-week and mode live in the query string, so a bookmark like
+Add your Sleeper username and every league you're in this season appears in the
+league menu, looked up fresh each visit so new leagues just show up. To follow a
+league you're not in — a friend's, say — add its league ID instead (the number in
+`sleeper.com/leagues/<league id>/...`); it's saved under "Saved leagues" with a ✕
+to remove it. Both are kept in your browser's storage, so they're per browser and
+per device and don't sync between your phone and laptop.
+
+The league, week and mode also live in the query string, so a bookmark like
 `?league=<league id>&mode=proj` opens straight to the standings — leave `week` off
 and it follows the current NFL week.
 
