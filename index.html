@@ -382,7 +382,7 @@ function teamBox(t, side){
   if (!t.rid) return `<div class="mu-team ${side}"><div class="mu-who dim">Bye week</div></div>`;
   return `<div class="mu-team ${side} ${t.edge}">
     ${t.avatar ? `<img src="https://sleepercdn.com/avatars/thumbs/${esc(t.avatar)}" alt="" onerror="this.remove()">` : ''}
-    <div class="mu-who"><div class="mu-name">${esc(t.name)}</div>${t.user ? `<small>${esc(t.user)}</small>` : ''}</div>
+    <div class="mu-who"><div class="mu-name">${esc(t.name)}</div>${t.user ? `<small>${esc(t.user)}</small>` : ''}${t.record ? `<small>${t.record}</small>` : ''}</div>
     <div class="mu-pts"><b>${fmt(t.live)}</b><span>${fmt(t.proj)} proj</span></div>
   </div>`;
 }
@@ -452,12 +452,21 @@ async function load(leagueId, week, mode){
   const notStarted = Object.values(secs).filter(v => v === 3600).length;
 
   const ctx = { projById, secs, labels, stats: stats || {}, playing, slots };
+  const rowById = Object.fromEntries(rows.map(x => [x.roster_id, x]));
+  // Season record now, then after this week: +1 for each of the H2H and median results.
+  const record = r => {
+    const s = (rosterById[r.roster_id] || {}).settings || {};
+    const w = s.wins || 0, l = s.losses || 0, t = s.ties ? '-' + s.ties : '';
+    const add = (r.h2h === 'W' ? 1 : 0) + (r.med === 'W' ? 1 : 0);
+    const sub = (r.h2h === 'L' ? 1 : 0) + (r.med === 'L' ? 1 : 0);
+    return `${w}-${l}${t} &rarr; ${w + add}-${l + sub}${t}`;
+  };
   const teamSide = (id, edge) => {
     if (id == null) return {};
     const u = userById[(rosterById[id] || {}).owner_id] || {};
     const name = teamName(id);
     return {
-      rid: id, edge, name, avatar: u.avatar,
+      rid: id, edge, name, avatar: u.avatar, record: rowById[id] ? record(rowById[id]) : '',
       // Same rule as the table: only show the username when it isn't already the name.
       user: u.display_name && u.display_name.trim() !== name.trim() ? u.display_name : '',
       m: matchupById[id] || {}, roster: rosterById[id] || {},
@@ -467,9 +476,6 @@ async function load(leagueId, week, mode){
 
   const rowCells = (r, i) => {
     const u = userById[(rosterById[r.roster_id] || {}).owner_id] || {};
-    const s = (rosterById[r.roster_id] || {}).settings || {};
-    const add = (r.h2h === 'W' ? 1 : 0) + (r.med === 'W' ? 1 : 0);
-    const sub = (r.h2h === 'L' ? 1 : 0) + (r.med === 'L' ? 1 : 0);
     const king = i === 0;
     const color = king ? 'var(--gold)' : r.med === 'W' ? 'var(--win)' : r.med === 'L' ? 'var(--loss)' : 'var(--tie)';
     const gapColor = r.med === 'W' ? 'var(--win)' : r.med === 'L' ? 'var(--loss)' : 'var(--tie)';
@@ -481,7 +487,7 @@ async function load(leagueId, week, mode){
         ${u.avatar ? `<img src="https://sleepercdn.com/avatars/thumbs/${esc(u.avatar)}" alt="" onerror="this.remove()">` : ''}
         <div><div class="name"><span class="caret">&#9654;</span> ${king ? '<span class="crown">&#128081;</span>' : ''}<span class="nm">${esc(shown)}</span>${king ? '<span class="bonus">$10</span>' : ''}</div>
         ${uname ? `<small class="uname">${esc(uname)}</small>` : ''}
-        <small>${s.wins||0}-${s.losses||0}${s.ties ? '-'+s.ties : ''} &rarr; ${(s.wins||0)+add}-${(s.losses||0)+sub}${s.ties ? '-'+s.ties : ''}</small></div>
+        <small>${record(r)}</small></div>
       </div></td>
       <td class="num ${liveCls} ${useProj ? 'dim' : 'lead'}">${fmt(r.live)}</td>
       ${projOk ? `<td class="num ${projCls} ${useProj ? 'lead' : 'dim'}">${fmt(projByRoster[r.roster_id])}</td>` : ''}
