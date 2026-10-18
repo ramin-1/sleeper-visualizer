@@ -89,6 +89,15 @@
   /* Must out-specify the #newver rule above: the UA's [hidden]{display:none} is only
      (0,0,1,0) and loses to an id selector, so the banner would never hide. */
   #newver[hidden]{display:none}
+  /* Chopped leagues: the team on the chopping block, and the teams already cut. */
+  tr.block>td{background:linear-gradient(90deg,rgba(239,68,68,.14),rgba(239,68,68,.04) 55%,transparent)}
+  tr.block>td:first-child{box-shadow:inset 3px 0 0 var(--loss);color:var(--loss)}
+  .team small.chopnote{color:var(--loss)}
+  tr.dead td{opacity:.45}
+  tr.dead-head td{font-size:10.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;
+    color:var(--dim);padding-top:16px}
+  .mu-head.solo{grid-template-columns:minmax(0,1fr)}
+  .mu-row.solo{grid-template-columns:auto minmax(0,1fr)}
   tr.row{cursor:pointer}
   tr.row:hover td{background:#162034}
   .caret{display:inline-block;width:10px;color:var(--dim);font-size:10px;transition:transform .12s}
@@ -160,7 +169,7 @@
 
 <div class="wrap">
   <h1>Median Watch</h1>
-  <p class="sub">Live league-median race — top half banks an extra win, bottom half an extra loss.</p>
+  <p class="sub" id="tagline">Live league-median race — top half banks an extra win, bottom half an extra loss.</p>
 
   <form id="f">
     <select id="league" aria-label="League" hidden></select>
@@ -188,6 +197,32 @@ const get = u => fetch(HOST + u).then(r => r.ok ? r.json() : Promise.reject(new 
 function median(nums){
   const s = [...nums].sort((a,b) => a-b), m = s.length >> 1;
   return s.length % 2 ? s[m] : (s[m-1] + s[m]) / 2;
+}
+
+// Guillotine ("chopped") leagues: the lowest scorer still alive is eliminated each week and
+// there is no head-to-head. Sleeper marks the league with settings.type 3 and
+// last_chopped_leg, and each eliminated roster with the week it was cut (settings.eliminated).
+const isChopped = (league, rosters) => (league.settings || {}).type === 3
+  || (league.settings || {}).last_chopped_leg != null
+  || rosters.some(r => (r.settings || {}).eliminated);
+
+// A team chopped in week N was still playing in week N; it is gone from N+1 on.
+const choppedBefore = (roster, week) => {
+  const e = (roster.settings || {}).eliminated;
+  return !!e && e < +week;
+};
+
+// Survivors ranked high to low. Each team's gap is its cushion over last place; the team in
+// last gets how far it trails the next team up (negative), i.e. what it needs to escape.
+function computeChop(entries){
+  const rows = [...entries].sort((a, b) => b.points - a.points);
+  const n = rows.length;
+  const low = n ? rows[n - 1].points : 0, next = n > 1 ? rows[n - 2].points : low;
+  rows.forEach((r, i) => {
+    r.block = n > 1 && i === n - 1;            // a lone survivor has won, not been chopped
+    r.gap = +(r.block ? r.points - next : r.points - low).toFixed(2);
+  });
+  return { line: low, rows };
 }
 
 // Seconds left in each team's game. This is Sleeper's own clock logic, matched to the
@@ -398,14 +433,16 @@ function teamBox(t, side){
 }
 
 // The expanded view: both teams' headers, then the two rosters side by side.
-function matchupView(me, opp, ctx){
+function matchupView(me, opp, ctx, solo){
   const L = rosterLists(me.m, me.roster), R = rosterLists(opp.m || {}, opp.roster || {});
   const card = (it, side, cls) => it ? playerCard(it.id, it.pts, ctx, `${side} ${cls}`) : `<div class="side ${side}"></div>`;
-  const rows = (a, b, slot, cls) => Array.from({ length: Math.max(a.length, b.length) }, (_, i) =>
-    `<div class="mu-row">${card(a[i], 'l', cls)}<div class="pl-slot">${esc(slot(i))}</div>${card(b[i], 'r', cls)}</div>`).join('');
+  const rows = (a, b, slot, cls) => Array.from({ length: Math.max(a.length, b.length) }, (_, i) => solo
+    ? `<div class="mu-row solo"><div class="pl-slot">${esc(slot(i))}</div>${card(a[i], 'l', cls)}</div>`
+    : `<div class="mu-row">${card(a[i], 'l', cls)}<div class="pl-slot">${esc(slot(i))}</div>${card(b[i], 'r', cls)}</div>`).join('');
   const section = (title, a, b, slot) => a.length || b.length
     ? `<div class="pl-sec">${title}</div>` + rows(a, b, () => slot, 'bn') : '';
-  return `<div class="mu-head">${teamBox(me, 'l')}<div class="mu-vs">VS</div>${teamBox(opp, 'r')}</div>`
+  return (solo ? `<div class="mu-head solo">${teamBox(me, 'l')}</div>`
+               : `<div class="mu-head">${teamBox(me, 'l')}<div class="mu-vs">VS</div>${teamBox(opp, 'r')}</div>`)
     + rows(L.starters, R.starters, i => ctx.slots[i] || '', '')
     + section('Bench', L.bench, R.bench, 'BN')
     + section('Injured Reserve', L.reserve, R.reserve, 'IR')
@@ -447,17 +484,31 @@ async function load(leagueId, week, mode){
     return u ? ((u.metadata || {}).team_name || u.display_name) : `Roster ${rid}`;
   };
 
-  const { median: med, rows } = computeWeek(matchups, useProj ? proj : null);
+  const chopped = isChopped(league, rosters);
+  // In a chopped league only the survivors are ranked; teams already cut are listed apart.
+  const dead = chopped ? rosters.filter(r => choppedBefore(r, week))
+    .sort((a, b) => b.settings.eliminated - a.settings.eliminated) : [];
+  const deadIds = new Set(dead.map(r => r.roster_id));
+  $('#tagline').textContent = chopped
+    ? 'Live chopping block — the lowest score among the survivors is eliminated this week.'
+    : 'Live league-median race — top half banks an extra win, bottom half an extra loss.';
+  // `med` is the line the bars are drawn against: the median, or in a chopped league the
+  // lowest surviving score — the one everyone else has to stay above.
+  let med, rows;
+  if (chopped) ({ line: med, rows } = computeChop(matchups.filter(m => !deadIds.has(m.roster_id))
+    .map(m => ({ roster_id: m.roster_id, points: useProj ? proj(m) : (m.points || 0), live: m.points || 0 }))));
+  else ({ median: med, rows } = computeWeek(matchups, useProj ? proj : null));
   const projByRoster = Object.fromEntries(matchups.map(m => [m.roster_id, proj(m)]));
   rows.sort((a,b) => b.points - a.points);
   const max = Math.max(...rows.map(r => r.points), med, 1);
   const pct = v => (v / max * 100).toFixed(2) + '%';
-  const half = rows.length / 2;
+  // Where the dashed line goes: above the bottom half, or above the team on the block.
+  const half = chopped ? (rows.length > 1 ? rows.length - 1 : -1) : rows.length / 2;
   // A phone has no room for both point columns; keep whichever the mode is ranking on.
   const liveCls = useProj ? 'hide-xs' : '', projCls = useProj ? '' : 'hide-xs';
   const slots = (league.roster_positions || []).filter(x => !['BN','IR','TAXI'].includes(x));
   const matchupById = Object.fromEntries(matchups.map(m => [m.roster_id, m]));
-  const cols = projOk ? 9 : 8;
+  const cols = (projOk ? 9 : 8) - (chopped ? 3 : 0);
   const medianOn = league.settings.league_average_match === 1;
   const inProgress = Object.values(secs).some(v => v > 0 && v < 3600);
   const notStarted = Object.values(secs).filter(v => v === 3600).length;
@@ -477,7 +528,7 @@ async function load(leagueId, week, mode){
     const u = userById[(rosterById[id] || {}).owner_id] || {};
     const name = teamName(id);
     return {
-      rid: id, edge, name, avatar: u.avatar, record: rowById[id] ? record(rowById[id]) : '',
+      rid: id, edge, name, avatar: u.avatar, record: !chopped && rowById[id] ? record(rowById[id]) : '',
       // Same rule as the table: only show the username when it isn't already the name.
       user: u.display_name && u.display_name.trim() !== name.trim() ? u.display_name : '',
       m: matchupById[id] || {}, roster: rosterById[id] || {},
@@ -485,7 +536,29 @@ async function load(leagueId, week, mode){
     };
   };
 
+  const chopCells = (r, i) => {
+    const u = userById[(rosterById[r.roster_id] || {}).owner_id] || {};
+    const color = r.block ? 'var(--loss)' : 'var(--win)';
+    const shown = teamName(r.roster_id);
+    const uname = u.display_name && u.display_name.trim() !== shown.trim() ? u.display_name : '';
+    return `<td class="num dim">${i+1}</td>
+      <td><div class="team">
+        ${u.avatar ? `<img src="https://sleepercdn.com/avatars/thumbs/${esc(u.avatar)}" alt="" onerror="this.remove()">` : ''}
+        <div><div class="name"><span class="caret">&#9654;</span> ${r.block ? '<span class="crown">&#129683;</span>' : ''}<span class="nm">${esc(shown)}</span></div>
+        ${uname ? `<small class="uname">${esc(uname)}</small>` : ''}
+        ${r.block ? '<small class="chopnote">on the chopping block</small>' : ''}</div>
+      </div></td>
+      <td class="num ${liveCls} ${useProj ? 'dim' : 'lead'}">${fmt(r.live)}</td>
+      ${projOk ? `<td class="num ${projCls} ${useProj ? 'lead' : 'dim'}">${fmt(projByRoster[r.roster_id])}</td>` : ''}
+      <td><div class="track">
+        <div class="fill" style="width:${pct(r.points)};background:${color};opacity:.55"></div>
+        <div class="med" style="left:${pct(med)}"></div>
+      </div></td>
+      <td class="num gap" style="color:${color}">${r.gap > 0 ? '+' : ''}${fmt(r.gap)}</td>`;
+  };
+
   const rowCells = (r, i) => {
+    if (chopped) return chopCells(r, i);
     const u = userById[(rosterById[r.roster_id] || {}).owner_id] || {};
     const king = i === 0;
     const color = king ? 'var(--gold)' : r.med === 'W' ? 'var(--win)' : r.med === 'L' ? 'var(--loss)' : 'var(--tie)';
@@ -513,7 +586,8 @@ async function load(leagueId, week, mode){
   };
 
   const notes = [
-    medianOn ? '' : 'Heads up: this league does not have Sleeper median scoring enabled, so the projected records below are hypothetical.',
+    chopped ? 'Chopped league: each week the lowest-scoring team still alive is eliminated. Cushion is how far a team sits above last place.'
+      : medianOn ? '' : 'Heads up: this league does not have Sleeper median scoring enabled, so the projected records below are hypothetical.',
     mode === 'proj' && !projOk ? 'No projections available for this week — showing live points instead.' : '',
     useProj && inProgress ? 'Projected uses Sleeper&rsquo;s own live formula &mdash; each starter&rsquo;s pre-game projection blended toward their current pace as the clock runs down.' : '',
     !useProj && notStarted ? `${notStarted} teams have not kicked off yet — switch to Projected final to see the likely cut line.` : ''
@@ -525,31 +599,36 @@ async function load(leagueId, week, mode){
   // Read before anything is written: rebuilding the shell below briefly empties the table,
   // and by the time it is refilled the browser has already clamped the offset to fit.
   const scrollY = window.scrollY;
-  const sig = [leagueId, week, mode, projOk, useProj, cols, rows.length].join('|');
+  const sig = [leagueId, week, mode, projOk, useProj, cols, rows.length, chopped, dead.length].join('|');
   // Also rebuild if the shell is gone (a "no matchups" message replaced it, say).
   if (out.dataset.sig !== sig || !out.querySelector('#tbl')) {
     out.dataset.sig = sig;
     out.innerHTML = `
     <div class="bar-head">
       <div class="stat"><span>League</span><b id="s-league"></b></div>
-      <div class="stat"><span>Week ${week} ${useProj ? 'projected' : 'live'} median</span><b id="s-med" style="color:var(--accent)"></b></div>
-      <div class="stat"><span>Above the line</span><b id="s-above"></b></div>
-      <div class="stat"><span>&#128081; Week leader &middot; $10</span><b id="s-king" style="color:var(--gold)"></b></div>
+      <div class="stat"><span>Week ${week} ${useProj ? 'projected' : 'live'} ${chopped ? 'low score' : 'median'}</span><b id="s-med" style="color:var(--accent)"></b></div>
+      <div class="stat"><span>${chopped ? 'Still alive' : 'Above the line'}</span><b id="s-above"></b></div>
+      ${chopped ? '<div class="stat"><span>&#129683; On the chopping block</span><b id="s-king" style="color:var(--loss)"></b></div>'
+                : '<div class="stat"><span>&#128081; Week leader &middot; $10</span><b id="s-king" style="color:var(--gold)"></b></div>'}
       <div class="stat"><span>Updated</span><b id="s-upd"></b></div>
     </div>
     <div id="notes"></div>
     <div class="tw"><table id="tbl"><thead><tr>
-      <th></th><th>Team &rarr; projected record</th><th class="num ${liveCls}"><button type="button" class="sort ${useProj ? '' : 'on'}" data-mode="live">Live</button></th>
+      <th></th><th>${chopped ? 'Team' : 'Team &rarr; projected record'}</th><th class="num ${liveCls}"><button type="button" class="sort ${useProj ? '' : 'on'}" data-mode="live">Live</button></th>
       ${projOk ? `<th class="num ${projCls}"><button type="button" class="sort ${useProj ? 'on' : ''}" data-mode="proj">Proj</button></th>` : ''}
-      <th>vs ${useProj ? 'projected' : 'live'} median</th><th class="num hide-xs">Gap</th><th class="num">Med</th>
-      <th class="num hide-s">H2H</th><th class="hide-s">Opponent</th>
-    </tr></thead><tbody></tbody></table></div>`;
+      <th>vs <span class="hide-xs">${useProj ? 'projected' : 'live'} </span>${chopped ? 'low score' : 'median'}</th>
+      ${chopped ? '<th class="num">Cushion</th>'
+                : '<th class="num hide-xs">Gap</th><th class="num">Med</th><th class="num hide-s">H2H</th><th class="hide-s">Opponent</th>'}
+    </tr></thead><tbody></tbody><tbody id="deadrows"></tbody></table></div>`;
   }
 
   out.querySelector('#s-league').textContent = league.name;
   out.querySelector('#s-med').textContent = fmt(med);
-  out.querySelector('#s-above').textContent = `${rows.filter(r => r.med === 'W').length} of ${rows.length}`;
-  out.querySelector('#s-king').textContent = teamName(rows[0].roster_id);
+  out.querySelector('#s-above').textContent = chopped ? `${rows.length} of ${rosters.length}`
+    : `${rows.filter(r => r.med === 'W').length} of ${rows.length}`;
+  const blockRow = rows.find(r => r.block);
+  out.querySelector('#s-king').textContent = chopped ? (blockRow ? teamName(blockRow.roster_id) : '—')
+    : teamName(rows[0].roster_id);
   out.querySelector('#s-upd').textContent = new Date().toLocaleTimeString();
   const notesEl = out.querySelector('#notes');
   if (notesEl.innerHTML !== notes) notesEl.innerHTML = notes;
@@ -572,14 +651,31 @@ async function load(leagueId, week, mode){
         dt.hidden = !expanded.has(rid);
       };
     }
-    tr.className = `row ${i === 0 ? 'king' : ''} ${i === half ? 'cut' : ''} ${expanded.has(rid) ? 'open' : ''}`;
+    const crown = chopped ? (r.block ? 'block' : '') : (i === 0 ? 'king' : '');
+    tr.className = `row ${crown} ${i === half ? 'cut' : ''} ${expanded.has(rid) ? 'open' : ''}`;
     tr.innerHTML = rowCells(r, i);
     dt.hidden = !expanded.has(rid);
-    // Underline whoever leads the head-to-head on the numbers the table is ranked by.
-    const edge = r.h2h === 'W' ? ['lead', 'trail'] : r.h2h === 'L' ? ['trail', 'lead'] : ['', ''];
-    dt.firstElementChild.innerHTML = matchupView(teamSide(rid, edge[0]), teamSide(r.oppRoster, edge[1]), ctx);
+    if (chopped) {
+      // No opponent in a chopped league: just this team's roster.
+      dt.firstElementChild.innerHTML = matchupView(teamSide(rid, r.block ? 'trail' : ''), {}, ctx, true);
+    } else {
+      // Underline whoever leads the head-to-head on the numbers the table is ranked by.
+      const edge = r.h2h === 'W' ? ['lead', 'trail'] : r.h2h === 'L' ? ['trail', 'lead'] : ['', ''];
+      dt.firstElementChild.innerHTML = matchupView(teamSide(rid, edge[0]), teamSide(r.oppRoster, edge[1]), ctx);
+    }
     tbody.append(tr, dt);
   });
+
+  // Teams already chopped, most recent first. Static within a week, so only written on change.
+  const deadHtml = dead.length ? `<tr class="dead-head"><td colspan="${cols}">Chopped</td></tr>` + dead.map(r => {
+    const u = userById[r.owner_id] || {};
+    return `<tr class="dead"><td class="num dim">&ndash;</td><td colspan="${cols - 1}"><div class="team">
+      ${u.avatar ? `<img src="https://sleepercdn.com/avatars/thumbs/${esc(u.avatar)}" alt="" onerror="this.remove()">` : ''}
+      <div><div class="name"><span class="nm">${esc(teamName(r.roster_id))}</span></div>
+      <small>Chopped &middot; week ${r.settings.eliminated}</small></div></div></td></tr>`;
+  }).join('') : '';
+  const deadEl = out.querySelector('#deadrows');
+  if (deadEl.dataset.html !== deadHtml) { deadEl.innerHTML = deadHtml; deadEl.dataset.html = deadHtml; }
 
   keepScroll(scrollY);
   return league;
@@ -841,6 +937,22 @@ function selftest(){
   a(pw.median === 27.515, 'projected median, got ' + pw.median);
   a(pw.rows[0].points === 30 && pw.rows[0].live === 0, 'row keeps both live and projected totals');
   a(pw.rows[0].med === 'W' && pw.rows[1].med === 'L', 'projection flips who clears the median');
+
+  // Chopped leagues.
+  a(isChopped({ settings: { type: 3 } }, []), 'type 3 is a chopped league');
+  a(isChopped({ settings: { type: 0, last_chopped_leg: 2 } }, []), 'last_chopped_leg marks one too');
+  a(isChopped({ settings: {} }, [{ settings: { eliminated: 1 } }]), 'an eliminated roster marks one');
+  a(!isChopped({ settings: { type: 0, league_average_match: 1 } }, [{ settings: {} }]), 'a median league is not chopped');
+  a(!choppedBefore({ settings: { eliminated: 5 } }, '5'), 'a team chopped in week 5 still played week 5');
+  a(choppedBefore({ settings: { eliminated: 5 } }, '6'), '...and is gone in week 6');
+  a(!choppedBefore({ settings: {} }, '6'), 'a survivor is never chopped');
+  const ch = computeChop([{ roster_id: 1, points: 80 }, { roster_id: 2, points: 100 }, { roster_id: 3, points: 90 }]);
+  a(ch.line === 80 && ch.rows.map(r => r.roster_id).join() === '2,3,1', 'survivors ranked, line at the low score');
+  a(ch.rows[0].gap === 20 && ch.rows[1].gap === 10, 'cushion is the margin over last place');
+  a(ch.rows[2].block && ch.rows[2].gap === -10, 'last place is on the block, needing 10 to escape');
+  a(ch.rows.filter(r => r.block).length === 1, 'exactly one team on the block');
+  const last = computeChop([{ roster_id: 7, points: 0 }]);
+  a(!last.rows[0].block && last.rows[0].gap === 0, 'a lone survivor has won, not been chopped');
 
   document.body.innerHTML = '<p style="padding:24px;color:#22c55e">selftest: all passed</p>';
 }

@@ -28,6 +28,13 @@ reload. A tab left open all Sunday would otherwise keep running old code.
 The team projected to finish first is crowned as the week's leader, since first
 place each week pays a $10 bonus.
 
+**Chopped (guillotine) leagues** are detected automatically. Instead of the
+median race the page shows the chopping block: only surviving teams are ranked,
+the lowest is marked as on the block, the Cushion column shows how far each team
+sits above last place (and what the last-place team needs to escape), and teams
+already cut are listed underneath with the week they went. There's no
+head-to-head, so expanding a team shows just its roster.
+
 Projections are scored with your league's own `scoring_settings`, not a
 generic PPR total.
 
