@@ -109,10 +109,19 @@
   .mu-head{align-items:center;padding:12px 4px 12px;border-bottom:1px solid var(--line)}
   .mu-row{align-items:stretch;border-bottom:1px solid var(--line)}
   .mu-row .pl-slot{align-self:center}
-  .mu-team{display:flex;align-items:center;gap:10px;min-width:0;padding-bottom:8px}
+  .mu-team{display:flex;flex-wrap:wrap;align-items:center;gap:10px;min-width:0;padding-bottom:8px}
   .mu-team.r{flex-direction:row-reverse;text-align:right}
   .mu-team.lead{box-shadow:inset 0 -3px 0 var(--win)}
   .mu-team.trail{box-shadow:inset 0 -3px 0 var(--loss)}
+  /* Win probability: the bar's length is the team's chance, mirrored on the right like Sleeper's. */
+  .mu-wp{flex-basis:100%;display:flex;align-items:center;gap:8px}
+  .mu-team.r .mu-wp{flex-direction:row-reverse}
+  .mu-bar{flex:1;display:flex;height:4px;border-radius:2px;background:var(--line);overflow:hidden}
+  .mu-team.r .mu-bar{justify-content:flex-end}
+  .mu-bar i{display:block;height:100%;border-radius:2px;background:var(--dim)}
+  .mu-wp.fav .mu-bar i{background:var(--win)}
+  .mu-wp.dog .mu-bar i{background:var(--loss)}
+  .mu-wp b{font-size:12.5px;font-variant-numeric:tabular-nums}
   .mu-team img{width:34px;height:34px;border-radius:50%;flex:none}
   .mu-who{flex:1;min-width:0}
   .mu-name{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -214,6 +223,30 @@ const choppedBefore = (roster, week) => {
 
 // Survivors ranked high to low. Each team's gap is its cushion over last place; the team in
 // last gets how far it trails the next team up (negative), i.e. what it needs to escape.
+// Standard normal CDF, via the Abramowitz-Stegun erf approximation (error under 2e-7).
+function normCdf(z){
+  const t = 1 / (1 + 0.3275911 * Math.abs(z) / Math.SQRT2);
+  const y = 1 - t * (0.254829592 + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))))
+    * Math.exp(-z * z / 2);
+  return z >= 0 ? (1 + y) / 2 : (1 - y) / 2;
+}
+
+// Sleeper's head-to-head win probability, ported from their web bundle. Each team's final
+// score is a normal distribution centred on its live projected total, whose spread shrinks
+// as that projection gets banked; the result is P(team 1 finishes ahead), clamped to 1-99%.
+// Once both teams have nothing left to play it is simply who won.
+function winProb(live1, proj1, live2, proj2){
+  const done = (a, p) => a.toFixed(2) === p.toFixed(2);
+  if (done(live1, proj1) && done(live2, proj2)) {
+    const x = +live1.toFixed(2), y = +live2.toFixed(2);
+    return x === y ? [0, 0] : x > y ? [1, 0] : [0, 1];
+  }
+  const spread = (a, p) => { const v = (a - p) ** 2 / (1 + 10 * (1 - a / p)); return v > 0 ? v : 0.1; };
+  const clamp = x => Math.max(0.01, Math.min(0.99, x));
+  const w = clamp(normCdf((proj1 - proj2) / Math.sqrt(spread(live1, proj1) + spread(live2, proj2))));
+  return [w, clamp(1 - w)];
+}
+
 function computeChop(entries){
   const rows = [...entries].sort((a, b) => b.points - a.points);
   const n = rows.length;
@@ -425,10 +458,13 @@ function rosterLists(matchup, roster){
 
 function teamBox(t, side){
   if (!t.rid) return `<div class="mu-team ${side}"><div class="mu-who dim">Bye week</div></div>`;
-  return `<div class="mu-team ${side} ${t.edge}">
+  return `<div class="mu-team ${side} ${t.edge || ''}">
     ${t.avatar ? `<img src="https://sleepercdn.com/avatars/thumbs/${esc(t.avatar)}" alt="" onerror="this.remove()">` : ''}
     <div class="mu-who"><div class="mu-name">${esc(t.name)}</div>${t.user ? `<small>${esc(t.user)}</small>` : ''}${t.record ? `<small>${t.record}</small>` : ''}</div>
     <div class="mu-pts"><b>${fmt(t.live)}</b><span>${fmt(t.proj)} proj</span></div>
+    ${t.wp == null ? '' : `<div class="mu-wp ${t.wp > 0.5 ? 'fav' : t.wp < 0.5 ? 'dog' : ''}">
+      <div class="mu-bar"><i style="width:${(t.wp * 100).toFixed(1)}%"></i></div><b>${Math.round(t.wp * 100)}%</b>
+    </div>`}
   </div>`;
 }
 
@@ -669,9 +705,11 @@ async function load(leagueId, week, mode, sort){
       // No opponent in a chopped league: just this team's roster.
       dt.firstElementChild.innerHTML = matchupView(teamSide(rid, r.block ? 'trail' : ''), {}, ctx, true);
     } else {
-      // Underline whoever leads the head-to-head on the numbers the table is ranked by.
-      const edge = r.h2h === 'W' ? ['lead', 'trail'] : r.h2h === 'L' ? ['trail', 'lead'] : ['', ''];
-      dt.firstElementChild.innerHTML = matchupView(teamSide(rid, edge[0]), teamSide(r.oppRoster, edge[1]), ctx);
+      // Win probability always runs on the live projection, whichever column the table is
+      // ranked by. Without projections it would just be "who is ahead right now", so skip it.
+      const me = teamSide(rid, ''), opp = teamSide(r.oppRoster, '');
+      if (projOk && opp.rid) [me.wp, opp.wp] = winProb(me.live, me.proj, opp.live, opp.proj);
+      dt.firstElementChild.innerHTML = matchupView(me, opp, ctx);
     }
     tbody.append(tr, dt);
   });
@@ -956,6 +994,18 @@ function selftest(){
   a(pw.median === 27.515, 'projected median, got ' + pw.median);
   a(pw.rows[0].points === 30 && pw.rows[0].live === 0, 'row keeps both live and projected totals');
   a(pw.rows[0].med === 'W' && pw.rows[1].med === 'L', 'projection flips who clears the median');
+
+  // Win probability — the first case is the matchup from a Sleeper screenshot (81% / 19%).
+  a(Math.abs(normCdf(0) - 0.5) < 1e-7 && Math.abs(normCdf(1.96) - 0.975) < 1e-4, 'normal CDF');
+  const [w1, w2] = winProb(91.05, 147.91, 95.80, 121.68);
+  a(Math.round(w1 * 100) === 81 && Math.round(w2 * 100) === 19, 'matches Sleeper: 81% / 19%; got ' + w1 + ' / ' + w2);
+  a(Math.abs(w1 + w2 - 1) < 1e-9, 'the two sides add up to 100%');
+  a(winProb(120, 120, 110, 110).join() === '1,0', 'both finished: the winner gets 100%');
+  a(winProb(110, 110, 110, 110).join() === '0,0', 'both finished level: a tie');
+  const [lo] = winProb(0, 20, 0, 200);       // raw ~0.15%, so the 1% floor applies
+  a(lo === 0.01, 'never below 1% while there is football left');
+  const [even] = winProb(50, 100, 50, 100);
+  a(Math.abs(even - 0.5) < 1e-9, 'identical teams are a coin flip');
 
   // Chopped leagues.
   a(isChopped({ settings: { type: 3 } }, []), 'type 3 is a chopped league');
