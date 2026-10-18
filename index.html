@@ -148,7 +148,7 @@
     .hide-xs{display:none}
     td,th{padding:6px 3px}
     th{white-space:normal}
-    th .sort.on::after{content:' \21C4'}
+    th .sort.on[data-mode]::after{content:' \21C4'}
     .team{min-width:0;gap:6px}
     .team img{width:22px;height:22px}
     .name{max-width:112px}
@@ -449,7 +449,7 @@ function matchupView(me, opp, ctx, solo){
     + section('Taxi', L.taxi, R.taxi, 'TAXI');
 }
 
-async function load(leagueId, week, mode){
+async function load(leagueId, week, mode, sort){
   const out = $('#out');
   // Only show the placeholder on a cold load. Blanking a rendered table on every refresh
   // collapses the page height, which scrolls the reader back to the top.
@@ -500,15 +500,22 @@ async function load(leagueId, week, mode){
   else ({ median: med, rows } = computeWeek(matchups, useProj ? proj : null));
   const projByRoster = Object.fromEntries(matchups.map(m => [m.roster_id, proj(m)]));
   rows.sort((a,b) => b.points - a.points);
+  rows.forEach((r, i) => r.rank = i + 1);
+  // FAAB left, chopped leagues only for now. Sorting by it only reorders the rows: the
+  // ranks, the chopping block and the cushions all still come from the scores.
+  const faabOn = chopped && (league.settings.waiver_budget || 0) > 0;
+  const faabLeft = rid => league.settings.waiver_budget - (((rosterById[rid] || {}).settings || {}).waiver_budget_used || 0);
+  const byFaab = faabOn && sort === 'faab';
+  const ordered = byFaab ? [...rows].sort((a, b) => faabLeft(b.roster_id) - faabLeft(a.roster_id) || a.rank - b.rank) : rows;
   const max = Math.max(...rows.map(r => r.points), med, 1);
   const pct = v => (v / max * 100).toFixed(2) + '%';
   // Where the dashed line goes: above the bottom half, or above the team on the block.
-  const half = chopped ? (rows.length > 1 ? rows.length - 1 : -1) : rows.length / 2;
+  const half = byFaab ? -1 : chopped ? (rows.length > 1 ? rows.length - 1 : -1) : rows.length / 2;
   // A phone has no room for both point columns; keep whichever the mode is ranking on.
   const liveCls = useProj ? 'hide-xs' : '', projCls = useProj ? '' : 'hide-xs';
   const slots = (league.roster_positions || []).filter(x => !['BN','IR','TAXI'].includes(x));
   const matchupById = Object.fromEntries(matchups.map(m => [m.roster_id, m]));
-  const cols = (projOk ? 9 : 8) - (chopped ? 3 : 0);
+  const cols = (projOk ? 9 : 8) - (chopped ? 3 : 0) + (faabOn ? 1 : 0);
   const medianOn = league.settings.league_average_match === 1;
   const inProgress = Object.values(secs).some(v => v > 0 && v < 3600);
   const notStarted = Object.values(secs).filter(v => v === 3600).length;
@@ -541,16 +548,17 @@ async function load(leagueId, week, mode){
     const color = r.block ? 'var(--loss)' : 'var(--win)';
     const shown = teamName(r.roster_id);
     const uname = u.display_name && u.display_name.trim() !== shown.trim() ? u.display_name : '';
-    return `<td class="num dim">${i+1}</td>
+    return `<td class="num dim">${r.rank}</td>
       <td><div class="team">
         ${u.avatar ? `<img src="https://sleepercdn.com/avatars/thumbs/${esc(u.avatar)}" alt="" onerror="this.remove()">` : ''}
         <div><div class="name"><span class="caret">&#9654;</span> ${r.block ? '<span class="crown">&#129683;</span>' : ''}<span class="nm">${esc(shown)}</span></div>
         ${uname ? `<small class="uname">${esc(uname)}</small>` : ''}
         ${r.block ? '<small class="chopnote">on the chopping block</small>' : ''}</div>
       </div></td>
+      ${faabOn ? `<td class="num ${byFaab ? 'lead' : 'dim'}">$${faabLeft(r.roster_id).toLocaleString()}</td>` : ''}
       <td class="num ${liveCls} ${useProj ? 'dim' : 'lead'}">${fmt(r.live)}</td>
       ${projOk ? `<td class="num ${projCls} ${useProj ? 'lead' : 'dim'}">${fmt(projByRoster[r.roster_id])}</td>` : ''}
-      <td><div class="track">
+      <td class="${faabOn ? 'hide-xs' : ''}"><div class="track">
         <div class="fill" style="width:${pct(r.points)};background:${color};opacity:.55"></div>
         <div class="med" style="left:${pct(med)}"></div>
       </div></td>
@@ -560,13 +568,13 @@ async function load(leagueId, week, mode){
   const rowCells = (r, i) => {
     if (chopped) return chopCells(r, i);
     const u = userById[(rosterById[r.roster_id] || {}).owner_id] || {};
-    const king = i === 0;
+    const king = r.rank === 1;
     const color = king ? 'var(--gold)' : r.med === 'W' ? 'var(--win)' : r.med === 'L' ? 'var(--loss)' : 'var(--tie)';
     const gapColor = r.med === 'W' ? 'var(--win)' : r.med === 'L' ? 'var(--loss)' : 'var(--tie)';
     // Half this league sets no team name, so their row already shows the username — don't repeat it.
     const shown = teamName(r.roster_id);
     const uname = u.display_name && u.display_name.trim() !== shown.trim() ? u.display_name : '';
-    return `<td class="num dim">${i+1}</td>
+    return `<td class="num dim">${r.rank}</td>
       <td><div class="team">
         ${u.avatar ? `<img src="https://sleepercdn.com/avatars/thumbs/${esc(u.avatar)}" alt="" onerror="this.remove()">` : ''}
         <div><div class="name"><span class="caret">&#9654;</span> ${king ? '<span class="crown">&#128081;</span>' : ''}<span class="nm">${esc(shown)}</span>${king ? '<span class="bonus">$10</span>' : ''}</div>
@@ -599,7 +607,7 @@ async function load(leagueId, week, mode){
   // Read before anything is written: rebuilding the shell below briefly empties the table,
   // and by the time it is refilled the browser has already clamped the offset to fit.
   const scrollY = window.scrollY;
-  const sig = [leagueId, week, mode, projOk, useProj, cols, rows.length, chopped, dead.length].join('|');
+  const sig = [leagueId, week, mode, projOk, useProj, cols, rows.length, chopped, dead.length, byFaab].join('|');
   // Also rebuild if the shell is gone (a "no matchups" message replaced it, say).
   if (out.dataset.sig !== sig || !out.querySelector('#tbl')) {
     out.dataset.sig = sig;
@@ -614,9 +622,11 @@ async function load(leagueId, week, mode){
     </div>
     <div id="notes"></div>
     <div class="tw"><table id="tbl"><thead><tr>
-      <th></th><th>${chopped ? 'Team' : 'Team &rarr; projected record'}</th><th class="num ${liveCls}"><button type="button" class="sort ${useProj ? '' : 'on'}" data-mode="live">Live</button></th>
-      ${projOk ? `<th class="num ${projCls}"><button type="button" class="sort ${useProj ? 'on' : ''}" data-mode="proj">Proj</button></th>` : ''}
-      <th>vs <span class="hide-xs">${useProj ? 'projected' : 'live'} </span>${chopped ? 'low score' : 'median'}</th>
+      <th></th><th>${chopped ? 'Team' : 'Team &rarr; projected record'}</th>
+      ${faabOn ? `<th class="num"><button type="button" class="sort ${byFaab ? 'on' : ''}" data-sort="faab">FAAB</button></th>` : ''}
+      <th class="num ${liveCls}"><button type="button" class="sort ${!byFaab && !useProj ? 'on' : ''}" data-mode="live">Live</button></th>
+      ${projOk ? `<th class="num ${projCls}"><button type="button" class="sort ${!byFaab && useProj ? 'on' : ''}" data-mode="proj">Proj</button></th>` : ''}
+      <th class="${faabOn ? 'hide-xs' : ''}">vs <span class="hide-xs">${useProj ? 'projected' : 'live'} </span>${chopped ? 'low score' : 'median'}</th>
       ${chopped ? '<th class="num">Cushion</th>'
                 : '<th class="num hide-xs">Gap</th><th class="num">Med</th><th class="num hide-s">H2H</th><th class="hide-s">Opponent</th>'}
     </tr></thead><tbody></tbody><tbody id="deadrows"></tbody></table></div>`;
@@ -634,7 +644,7 @@ async function load(leagueId, week, mode){
   if (notesEl.innerHTML !== notes) notesEl.innerHTML = notes;
 
   const tbody = out.querySelector('#tbl tbody');
-  rows.forEach((r, i) => {
+  ordered.forEach((r, i) => {
     const rid = r.roster_id;
     let tr = tbody.querySelector(`tr.row[data-rid="${rid}"]`);
     let dt = tbody.querySelector(`tr.detail[data-rid="${rid}"]`);
@@ -651,7 +661,7 @@ async function load(leagueId, week, mode){
         dt.hidden = !expanded.has(rid);
       };
     }
-    const crown = chopped ? (r.block ? 'block' : '') : (i === 0 ? 'king' : '');
+    const crown = chopped ? (r.block ? 'block' : '') : (r.rank === 1 ? 'king' : '');
     tr.className = `row ${crown} ${i === half ? 'cut' : ''} ${expanded.has(rid) ? 'open' : ''}`;
     tr.innerHTML = rowCells(r, i);
     dt.hidden = !expanded.has(rid);
@@ -721,6 +731,7 @@ async function boot(){
   $('#wk').innerHTML = Array.from({length: 18}, (_, i) =>
     `<option value="${i+1}" ${i+1 === cur ? 'selected' : ''}>Week ${i+1}</option>`).join('');
   let mode = p.get('mode') || ls.get('mode') || 'live';
+  let sort = 'score';                               // or 'faab' (chopped leagues)
 
   // Leagues come from two places: everything the saved Sleeper user is in (looked up fresh
   // each visit, so new leagues just appear), and league IDs added or opened by hand —
@@ -779,7 +790,7 @@ async function boot(){
     const url = `?league=${current}&week=${wk}&mode=${mode}`;
     if (location.search !== url) history.replaceState(null, '', url);
     const id = current;
-    load(id, wk, mode).then(league => { if (id === current) remember(league); }).catch(e => {
+    load(id, wk, mode, sort).then(league => { if (id === current) remember(league); }).catch(e => {
       // Keep whatever is on screen if a refresh fails; the Updated time stops advancing,
       // which is the signal that it went stale.
       if ($('#out').querySelector('table')) console.warn('refresh failed:', e.message);
@@ -792,6 +803,7 @@ async function boot(){
     if (id === current) { render(); return go(); }
     current = id;
     expanded.clear();                               // roster ids 1-12 repeat across leagues
+    sort = 'score';
     $('#out').innerHTML = '';
     window.scrollTo(0, 0);
     render();
@@ -844,12 +856,19 @@ async function boot(){
   $('#out').addEventListener('click', e => {
     const btn = e.target.closest('button.sort');
     if (!btn) return;
+    if (btn.dataset.sort === 'faab') {
+      if (sort === 'faab') return;
+      sort = 'faab';
+      return go();
+    }
     let next = btn.dataset.mode;
     // On a phone only the active column is shown, so tapping it swaps to the other one.
     if (btn.classList.contains('on') && matchMedia('(max-width:560px)').matches)
       next = next === 'proj' ? 'live' : 'proj';
-    if (next === mode) return;
+    // Live/Proj also put the rows back in score order, even if the mode is unchanged.
+    if (next === mode && sort === 'score') return;
     mode = next;
+    sort = 'score';
     go();
   });
   setInterval(() => { if (!document.hidden && current) go(); }, 30000);

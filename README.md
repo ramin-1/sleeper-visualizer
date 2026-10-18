@@ -32,7 +32,9 @@ place each week pays a $10 bonus.
 median race the page shows the chopping block: only surviving teams are ranked,
 the lowest is marked as on the block, the Cushion column shows how far each team
 sits above last place (and what the last-place team needs to escape), and teams
-already cut are listed underneath with the week they went. There's no
+already cut are listed underneath with the week they went. A FAAB column shows each
+team's remaining waiver budget; click it to order the rows by money left (ranks,
+cushions and the chopping block still come from the scores). There's no
 head-to-head, so expanding a team shows just its roster.
 
 Projections are scored with your league's own `scoring_settings`, not a
