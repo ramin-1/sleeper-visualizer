@@ -122,6 +122,7 @@
   .mu-wp.fav .mu-bar i{background:var(--win)}
   .mu-wp.dog .mu-bar i{background:var(--loss)}
   .mu-wp b{font-size:12.5px;font-variant-numeric:tabular-nums}
+  .team small.ytp,.mu-who small.ytp{color:#f5a524}
   .mu-team img{width:34px;height:34px;border-radius:50%;flex:none}
   .mu-who{flex:1;min-width:0}
   .mu-name{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -223,6 +224,20 @@ const choppedBefore = (roster, week) => {
 
 // Survivors ranked high to low. Each team's gap is its cushion over last place; the team in
 // last gets how far it trails the next team up (negative), i.e. what it needs to escape.
+// Starters whose NFL game has not kicked off, the way Sleeper lists them: grouped by the
+// player's own position (a FLEX receiver counts as WR), in lineup order, with a count when
+// there is more than one — "QB, RB, 4 WR, TE, K, DEF". Players mid-game don't count.
+const POS_ORDER = ['QB', 'RB', 'WR', 'TE', 'K', 'DEF'];
+function yetToPlay(starters, projById, pregame){
+  const pos = (starters || []).map(id => projById[id]).filter(p => p && pregame.has(p.team)).map(p => p.pos);
+  const count = {};
+  pos.forEach(p => count[p] = (count[p] || 0) + 1);
+  const rank = p => { const i = POS_ORDER.indexOf(p); return i < 0 ? 99 : i; };
+  const list = Object.keys(count).sort((a, b) => rank(a) - rank(b))
+    .map(p => count[p] > 1 ? `${count[p]} ${p}` : p).join(', ');
+  return { n: pos.length, list };
+}
+
 // Standard normal CDF, via the Abramowitz-Stegun erf approximation (error under 2e-7).
 function normCdf(z){
   const t = 1 / (1 + 0.3275911 * Math.abs(z) / Math.SQRT2);
@@ -460,7 +475,7 @@ function teamBox(t, side){
   if (!t.rid) return `<div class="mu-team ${side}"><div class="mu-who dim">Bye week</div></div>`;
   return `<div class="mu-team ${side} ${t.edge || ''}">
     ${t.avatar ? `<img src="https://sleepercdn.com/avatars/thumbs/${esc(t.avatar)}" alt="" onerror="this.remove()">` : ''}
-    <div class="mu-who"><div class="mu-name">${esc(t.name)}</div>${t.user ? `<small>${esc(t.user)}</small>` : ''}${t.record ? `<small>${t.record}</small>` : ''}</div>
+    <div class="mu-who"><div class="mu-name">${esc(t.name)}</div>${t.user ? `<small>${esc(t.user)}</small>` : ''}${t.record ? `<small>${t.record}</small>` : ''}${t.ytp ? `<small class="ytp">Yet to play (${t.ytp.n})${t.ytp.n ? ' &middot; ' + t.ytp.list : ''}</small>` : ''}</div>
     <div class="mu-pts"><b>${fmt(t.live)}</b><span>${fmt(t.proj)} proj</span></div>
     ${t.wp == null ? '' : `<div class="mu-wp ${t.wp > 0.5 ? 'fav' : t.wp < 0.5 ? 'dog' : ''}">
       <div class="mu-bar"><i style="width:${(t.wp * 100).toFixed(1)}%"></i></div><b>${Math.round(t.wp * 100)}%</b>
@@ -509,6 +524,11 @@ async function load(leagueId, week, mode, sort){
   const secs = secondsLeftByTeam(games), labels = gameLabelByTeam(games);
   const playing = new Set((games || []).filter(g => g.status === 'in_game')
     .flatMap(g => [g.metadata?.home_team, g.metadata?.away_team]));
+  const pregame = new Set((games || []).filter(g => g.status === 'pre_game')
+    .flatMap(g => [g.metadata?.home_team, g.metadata?.away_team]));
+  const ytp = rid => yetToPlay((matchupById[rid] || {}).starters, projById, pregame);
+  // Under a team's name in the table; only shown while someone is still to play.
+  const ytpLine = rid => { const y = ytp(rid); return y.n ? `<small class="ytp">${y.n} yet to play &middot; ${y.list}</small>` : ''; };
   const proj = m => projectTeam(m, projById, secs);
   const projOk = Object.keys(projById).length > 0;
   const useProj = mode === 'proj' && projOk;
@@ -575,7 +595,7 @@ async function load(leagueId, week, mode, sort){
       // Same rule as the table: only show the username when it isn't already the name.
       user: u.display_name && u.display_name.trim() !== name.trim() ? u.display_name : '',
       m: matchupById[id] || {}, roster: rosterById[id] || {},
-      live: (matchupById[id] || {}).points || 0, proj: projByRoster[id]
+      live: (matchupById[id] || {}).points || 0, proj: projByRoster[id], ytp: ytp(id)
     };
   };
 
@@ -589,7 +609,8 @@ async function load(leagueId, week, mode, sort){
         ${u.avatar ? `<img src="https://sleepercdn.com/avatars/thumbs/${esc(u.avatar)}" alt="" onerror="this.remove()">` : ''}
         <div><div class="name"><span class="caret">&#9654;</span> ${r.block ? '<span class="crown">&#129683;</span>' : ''}<span class="nm">${esc(shown)}</span></div>
         ${uname ? `<small class="uname">${esc(uname)}</small>` : ''}
-        ${r.block ? '<small class="chopnote">on the chopping block</small>' : ''}</div>
+        ${r.block ? '<small class="chopnote">on the chopping block</small>' : ''}
+        ${ytpLine(r.roster_id)}</div>
       </div></td>
       ${faabOn ? `<td class="num ${byFaab ? 'lead' : 'dim'}">$${faabLeft(r.roster_id).toLocaleString()}</td>` : ''}
       <td class="num ${liveCls} ${useProj ? 'dim' : 'lead'}">${fmt(r.live)}</td>
@@ -615,7 +636,8 @@ async function load(leagueId, week, mode, sort){
         ${u.avatar ? `<img src="https://sleepercdn.com/avatars/thumbs/${esc(u.avatar)}" alt="" onerror="this.remove()">` : ''}
         <div><div class="name"><span class="caret">&#9654;</span> ${king ? '<span class="crown">&#128081;</span>' : ''}<span class="nm">${esc(shown)}</span>${king ? '<span class="bonus">$10</span>' : ''}</div>
         ${uname ? `<small class="uname">${esc(uname)}</small>` : ''}
-        <small>${record(r)}</small></div>
+        <small>${record(r)}</small>
+        ${ytpLine(r.roster_id)}</div>
       </div></td>
       <td class="num ${liveCls} ${useProj ? 'dim' : 'lead'}">${fmt(r.live)}</td>
       ${projOk ? `<td class="num ${projCls} ${useProj ? 'lead' : 'dim'}">${fmt(projByRoster[r.roster_id])}</td>` : ''}
@@ -1006,6 +1028,14 @@ function selftest(){
   a(lo === 0.01, 'never below 1% while there is football left');
   const [even] = winProb(50, 100, 50, 100);
   a(Math.abs(even - 0.5) < 1e-9, 'identical teams are a coin flip');
+
+  // Yet to play.
+  const ypProj = { a: { team: 'SF', pos: 'WR' }, b: { team: 'SF', pos: 'QB' }, c: { team: 'NO', pos: 'WR' },
+                   d: { team: 'SF', pos: 'WR' }, e: { team: 'SF', pos: 'DEF' } };
+  const yp = yetToPlay(['a', 'b', 'c', 'd', 'e', '0'], ypProj, new Set(['SF']));
+  a(yp.n === 4 && yp.list === 'QB, 2 WR, DEF', 'grouped by position in lineup order; got ' + yp.list);
+  a(yetToPlay(['c'], ypProj, new Set(['SF'])).n === 0, 'a player whose game has started is not yet to play');
+  a(yetToPlay(undefined, ypProj, new Set()).list === '', 'no lineup, nothing to play');
 
   // Chopped leagues.
   a(isChopped({ settings: { type: 3 } }, []), 'type 3 is a chopped league');
