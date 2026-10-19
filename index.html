@@ -86,6 +86,22 @@
   th .sort:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:3px}
   th .sort.on{color:var(--accent)}
   th .sort.on::after{content:' \25BE'}
+  th .sort.on.flip::after{content:' \25B4'}
+  /* Live / Proj, for the whole page. Buttons are reset with all:unset, so [hidden] needs restating. */
+  .seg{display:flex;flex:none;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .seg button{all:unset;cursor:pointer;padding:9px 14px;color:var(--dim);font-weight:600;background:var(--card)}
+  .seg button.on{background:var(--accent);color:#04121c}
+  .seg button:focus-visible,.tabs button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+  .tabs{display:flex;gap:4px;margin:0 0 14px;border-bottom:1px solid var(--line)}
+  .tabs button{all:unset;cursor:pointer;padding:8px 12px;margin-bottom:-1px;color:var(--dim);font-weight:600;
+    border-bottom:2px solid transparent}
+  .tabs button.on{color:var(--txt);border-bottom-color:var(--accent)}
+  .tabs button[hidden]{display:none}
+  /* Standings */
+  td.mv{font-size:12px;font-weight:700}
+  td.mv.up{color:var(--win)}
+  td.mv.down{color:var(--loss)}
+  small.wk{display:block;color:var(--dim);font-size:11px;font-weight:400}
   /* Must out-specify the #newver rule above: the UA's [hidden]{display:none} is only
      (0,0,1,0) and loses to an id selector, so the banner would never hide. */
   #newver[hidden]{display:none}
@@ -158,7 +174,6 @@
     .hide-xs{display:none}
     td,th{padding:6px 3px}
     th{white-space:normal}
-    th .sort.on[data-mode]::after{content:' \21C4'}
     .team{min-width:0;gap:6px}
     .team img{width:22px;height:22px}
     .name{max-width:112px}
@@ -185,12 +200,20 @@
     <select id="league" aria-label="League" hidden></select>
     <button type="button" id="rm" class="ghost" title="Remove this saved league" aria-label="Remove this saved league" hidden>&#10005;</button>
     <select id="wk" aria-label="Week"></select>
+    <div class="seg" id="modeSeg" role="group" aria-label="Score with">
+      <button type="button" data-set-mode="live">Live</button>
+      <button type="button" data-set-mode="proj">Proj</button>
+    </div>
     <input id="add" placeholder="Add your Sleeper username or a league ID" aria-label="Sleeper username or league ID">
     <button>Add</button>
   </form>
   <p id="who" class="sub" hidden></p>
   <p id="msg" class="sub" hidden></p>
 
+  <nav class="tabs" id="tabs" aria-label="View">
+    <button type="button" id="tab-watch" data-view="watch">Median Watch</button>
+    <button type="button" id="tab-standings" data-view="standings">Standings</button>
+  </nav>
   <div id="out"></div>
 </div>
 
@@ -236,6 +259,36 @@ function yetToPlay(starters, projById, pregame){
   const list = Object.keys(count).sort((a, b) => rank(a) - rank(b))
     .map(p => count[p] > 1 ? `${count[p]} ${p}` : p).join(', ');
   return { n: pos.length, list };
+}
+
+// What this week adds to a record: the head-to-head result, plus the median game in a
+// league that plays one. A tie (either game) is a tie.
+function weekResult(r, withMedian){
+  const res = r ? [r.h2h, withMedian ? r.med : null] : [];
+  const n = x => res.filter(v => v === x).length;
+  return { w: n('W'), l: n('L'), t: n('T') };
+}
+const fmtRecord = ({ w, l, t }) => `${w}-${l}${t ? '-' + t : ''}`;
+
+// Season standings now and after this week. Sleeper's season totals only cover weeks
+// already scored, so this week goes on top — unless it is one of those weeks (a past week),
+// in which case adding it again would double-count. Ordered by win percentage (a tie is
+// half a win), then points for: Sleeper's default, checked against a real league.
+function projectStandings(rosters, rowById, { counted, withMedian }){
+  const pts = (s, k) => (s[k] || 0) + (s[k + '_decimal'] || 0) / 100;
+  const teams = rosters.map(ro => {
+    const s = ro.settings || {}, r = counted ? null : rowById[ro.roster_id];
+    const now = { w: s.wins || 0, l: s.losses || 0, t: s.ties || 0, pf: pts(s, 'fpts'), pa: pts(s, 'fpts_against') };
+    const add = weekResult(r, withMedian);
+    const wkPF = r ? r.points : 0, wkPA = r && r.oppPoints != null ? r.oppPoints : 0;
+    return { rid: ro.roster_id, now, wkPF, wkPA, played: !!r,
+      proj: { w: now.w + add.w, l: now.l + add.l, t: now.t + add.t, pf: now.pf + wkPF, pa: now.pa + wkPA } };
+  });
+  const pct = x => (x.w + x.t / 2) / Math.max(1, x.w + x.l + x.t);
+  for (const key of ['now', 'proj'])
+    [...teams].sort((a, b) => pct(b[key]) - pct(a[key]) || b[key].pf - a[key].pf)
+      .forEach((t, i) => t[key + 'Rank'] = i + 1);
+  return teams;
 }
 
 // Standard normal CDF, via the Abramowitz-Stegun erf approximation (error under 2e-7).
@@ -500,7 +553,59 @@ function matchupView(me, opp, ctx, solo){
     + section('Taxi', L.taxi, R.taxi, 'TAXI');
 }
 
-async function load(leagueId, week, mode, sort){
+function renderStandings(out, d){
+  const { league, week, rows, rosters, rosterById, userById, teamName, useProj, medianOn, sSort } = d;
+  const counted = +week <= (league.settings.last_scored_leg || 0);
+  const teams = projectStandings(rosters, Object.fromEntries(rows.map(r => [r.roster_id, r])), { counted, withMedian: medianOn });
+  const playoffs = league.settings.playoff_teams || 0;
+  // value to sort on, and which way the first click sorts (1 = smallest first)
+  const KEYS = {
+    rank:   [t => t.projRank, 1],
+    move:   [t => t.nowRank - t.projRank, -1],
+    team:   [t => teamName(t.rid).trim().toLowerCase(), 1],
+    record: [t => t.projRank, 1],
+    pf:     [t => t.proj.pf, -1],
+    pa:     [t => t.proj.pa, -1]
+  };
+  const [val, first] = KEYS[sSort.key] || KEYS.rank;
+  const dir = first * (sSort.flip ? -1 : 1);
+  teams.sort((a, b) => { const x = val(a), y = val(b); return (x < y ? -1 : x > y ? 1 : 0) * dir || a.projRank - b.projRank; });
+  // The playoff line only means something while the rows are in standings order.
+  const natural = (sSort.key === 'rank' || sSort.key === 'record') && !sSort.flip;
+  const head = (key, label, cls = '') => `<th class="${cls}"><button type="button" class="sort ${sSort.key === key ? 'on' + (sSort.flip ? ' flip' : '') : ''}" data-ssort="${key}">${label}</button></th>`;
+  const body = teams.map(t => {
+    const u = userById[(rosterById[t.rid] || {}).owner_id] || {};
+    const name = teamName(t.rid);
+    const uname = u.display_name && u.display_name.trim() !== name.trim() ? u.display_name : '';
+    const mv = t.nowRank - t.projRank;
+    return `<tr class="${natural && playoffs && t.projRank === playoffs + 1 ? 'cut' : ''}">
+      <td class="num dim">${t.projRank}</td>
+      <td class="num mv ${mv > 0 ? 'up' : mv < 0 ? 'down' : 'dim'}">${mv > 0 ? '&#9650;' + mv : mv < 0 ? '&#9660;' + -mv : '&ndash;'}</td>
+      <td><div class="team">
+        ${u.avatar ? `<img src="https://sleepercdn.com/avatars/thumbs/${esc(u.avatar)}" alt="" onerror="this.remove()">` : ''}
+        <div><div class="name"><span class="nm">${esc(name)}</span></div>${uname ? `<small class="uname">${esc(uname)}</small>` : ''}</div>
+      </div></td>
+      <td class="num">${counted ? '' : `<span class="dim hide-xs">${fmtRecord(t.now)} &rarr; </span>`}<b>${fmtRecord(t.proj)}</b></td>
+      <td class="num"><b>${fmt(t.proj.pf)}</b>${t.played ? `<small class="wk">+${fmt(t.wkPF)}<span class="hide-xs"> this wk</span></small>` : ''}</td>
+      <td class="num hide-xs"><b>${fmt(t.proj.pa)}</b>${t.played && t.wkPA ? `<small class="wk">+${fmt(t.wkPA)}<span class="hide-xs"> this wk</span></small>` : ''}</td>
+    </tr>`;
+  }).join('');
+  out.innerHTML = `
+    <div class="bar-head">
+      <div class="stat"><span>League</span><b>${esc(league.name)}</b></div>
+      <div class="stat"><span>Standings after week ${esc(week)}</span><b>${counted ? 'Final' : useProj ? 'Projected' : 'If it ended now'}</b></div>
+      ${playoffs ? `<div class="stat"><span>Playoff spots</span><b>${playoffs}</b></div>` : ''}
+      <div class="stat"><span>Updated</span><b>${new Date().toLocaleTimeString()}</b></div>
+    </div>
+    <p class="note">${counted
+      ? `Week ${esc(week)} is already in the season totals, so these are the actual standings.`
+      : `The season so far plus this week&rsquo;s ${useProj ? 'projected' : 'live'} results${medianOn ? ' (head-to-head and median)' : ''}. Ties broken by points for; &#9650;&#9660; is the move from the current standings.`}</p>
+    <div class="tw"><table id="stbl"><thead><tr>
+      ${head('rank', '#', 'num')}${head('move', '+/&minus;', 'num')}${head('team', 'Team')}${head('record', 'Record', 'num')}${head('pf', 'PF', 'num')}${head('pa', 'PA', 'num hide-xs')}
+    </tr></thead><tbody>${body}</tbody></table></div>`;
+}
+
+async function load(leagueId, week, mode, sort, view, sSort){
   const out = $('#out');
   // Only show the placeholder on a cold load. Blanking a rendered table on every refresh
   // collapses the page height, which scrolls the reader back to the top.
@@ -545,6 +650,12 @@ async function load(leagueId, week, mode, sort){
   const dead = chopped ? rosters.filter(r => choppedBefore(r, week))
     .sort((a, b) => b.settings.eliminated - a.settings.eliminated) : [];
   const deadIds = new Set(dead.map(r => r.roster_id));
+  // A chopped league has no records to project, so it has no Standings tab.
+  const standings = view === 'standings' && !chopped;
+  $('#tab-watch').textContent = chopped ? 'Chopping Block' : 'Median Watch';
+  $('#tab-standings').hidden = chopped;
+  $('#tab-watch').classList.toggle('on', !standings);
+  $('#tab-standings').classList.toggle('on', standings);
   $('#tagline').textContent = chopped
     ? 'Live chopping block — the lowest score among the survivors is eliminated this week.'
     : 'Live league-median race — top half banks an extra win, bottom half an extra loss.';
@@ -576,15 +687,21 @@ async function load(leagueId, week, mode, sort){
   const inProgress = Object.values(secs).some(v => v > 0 && v < 3600);
   const notStarted = Object.values(secs).filter(v => v === 3600).length;
 
+  if (standings) {
+    const scrollY = window.scrollY;
+    delete out.dataset.sig;                         // the watch table is gone; rebuild it on the way back
+    renderStandings(out, { league, week, rows, rosters, rosterById, userById, teamName, useProj, medianOn, sSort });
+    keepScroll(scrollY);
+    return league;
+  }
+
   const ctx = { projById, secs, labels, stats: stats || {}, playing, slots };
   const rowById = Object.fromEntries(rows.map(x => [x.roster_id, x]));
   // Season record now, then after this week: +1 for each of the H2H and median results.
   const record = r => {
     const s = (rosterById[r.roster_id] || {}).settings || {};
-    const w = s.wins || 0, l = s.losses || 0, t = s.ties ? '-' + s.ties : '';
-    const add = (r.h2h === 'W' ? 1 : 0) + (r.med === 'W' ? 1 : 0);
-    const sub = (r.h2h === 'L' ? 1 : 0) + (r.med === 'L' ? 1 : 0);
-    return `${w}-${l}${t} &rarr; ${w + add}-${l + sub}${t}`;
+    const now = { w: s.wins || 0, l: s.losses || 0, t: s.ties || 0 }, add = weekResult(r, true);
+    return `${fmtRecord(now)} &rarr; ${fmtRecord({ w: now.w + add.w, l: now.l + add.l, t: now.t + add.t })}`;
   };
   const teamSide = (id, edge) => {
     if (id == null) return {};
@@ -792,6 +909,8 @@ async function boot(){
     `<option value="${i+1}" ${i+1 === cur ? 'selected' : ''}>Week ${i+1}</option>`).join('');
   let mode = p.get('mode') || ls.get('mode') || 'live';
   let sort = 'score';                               // or 'faab' (chopped leagues)
+  let view = p.get('view') === 'standings' ? 'standings' : 'watch';
+  let sSort = { key: 'rank', flip: false };         // Standings tab column sort
 
   // Leagues come from two places: everything the saved Sleeper user is in (looked up fresh
   // each visit, so new leagues just appear), and league IDs added or opened by hand —
@@ -847,15 +966,24 @@ async function boot(){
     ls.set('mode', mode);
     // Only touch history when the URL actually changes. Rewriting it on every 30s refresh
     // was handing the browser a reason to scroll back to the top.
-    const url = `?league=${current}&week=${wk}&mode=${mode}`;
+    document.querySelectorAll('#modeSeg button').forEach(b => b.classList.toggle('on', b.dataset.setMode === mode));
+    const url = `?league=${current}&week=${wk}&mode=${mode}${view === 'standings' ? '&view=standings' : ''}`;
     if (location.search !== url) history.replaceState(null, '', url);
     const id = current;
-    load(id, wk, mode, sort).then(league => { if (id === current) remember(league); }).catch(e => {
+    load(id, wk, mode, sort, view, sSort).then(league => { if (id === current) remember(league); }).catch(e => {
       // Keep whatever is on screen if a refresh fails; the Updated time stops advancing,
       // which is the signal that it went stale.
       if ($('#out').querySelector('table')) console.warn('refresh failed:', e.message);
       else $('#out').innerHTML = `<p class="err">${esc(e.message)}</p>`;
     });
+  };
+
+  // Also puts the rows back in score order, even if the mode is unchanged.
+  const setMode = next => {
+    if (next === mode && sort === 'score') return;
+    mode = next;
+    sort = 'score';
+    go();
   };
 
   const choose = id => {
@@ -864,6 +992,7 @@ async function boot(){
     current = id;
     expanded.clear();                               // roster ids 1-12 repeat across leagues
     sort = 'score';
+    sSort = { key: 'rank', flip: false };
     $('#out').innerHTML = '';
     window.scrollTo(0, 0);
     render();
@@ -916,19 +1045,28 @@ async function boot(){
   $('#out').addEventListener('click', e => {
     const btn = e.target.closest('button.sort');
     if (!btn) return;
+    if (btn.dataset.ssort) {                        // Standings: same column flips the order
+      const key = btn.dataset.ssort;
+      sSort = sSort.key === key ? { key, flip: !sSort.flip } : { key, flip: false };
+      return go();
+    }
     if (btn.dataset.sort === 'faab') {
       if (sort === 'faab') return;
       sort = 'faab';
       return go();
     }
-    let next = btn.dataset.mode;
-    // On a phone only the active column is shown, so tapping it swaps to the other one.
-    if (btn.classList.contains('on') && matchMedia('(max-width:560px)').matches)
-      next = next === 'proj' ? 'live' : 'proj';
-    // Live/Proj also put the rows back in score order, even if the mode is unchanged.
-    if (next === mode && sort === 'score') return;
-    mode = next;
-    sort = 'score';
+    setMode(btn.dataset.mode);
+  });
+  // The Live/Proj toggle and the table's Live/Proj headers are the same setting.
+  $('#modeSeg').addEventListener('click', e => {
+    const b = e.target.closest('button[data-set-mode]');
+    if (b) setMode(b.dataset.setMode);
+  });
+  $('#tabs').addEventListener('click', e => {
+    const b = e.target.closest('button[data-view]');
+    if (!b || b.dataset.view === view) return;
+    view = b.dataset.view;
+    window.scrollTo(0, 0);
     go();
   });
   setInterval(() => { if (!document.hidden && current) go(); }, 30000);
@@ -1036,6 +1174,28 @@ function selftest(){
   a(yp.n === 4 && yp.list === 'QB, 2 WR, DEF', 'grouped by position in lineup order; got ' + yp.list);
   a(yetToPlay(['c'], ypProj, new Set(['SF'])).n === 0, 'a player whose game has started is not yet to play');
   a(yetToPlay(undefined, ypProj, new Set()).list === '', 'no lineup, nothing to play');
+
+  // Projected standings.
+  const sr = projectStandings([
+    { roster_id: 1, settings: { wins: 5, losses: 5, fpts: 600, fpts_decimal: 50, fpts_against: 580 } },
+    { roster_id: 2, settings: { wins: 6, losses: 4, fpts: 590, fpts_against: 600 } },
+    { roster_id: 3, settings: { wins: 5, losses: 5, fpts: 620, fpts_against: 610 } }
+  ], {
+    1: { points: 150, h2h: 'W', med: 'W', oppPoints: 100 },
+    2: { points: 100, h2h: 'L', med: 'L', oppPoints: 150 },
+    3: { points: 110, h2h: 'W', med: 'T', oppPoints: 90 }
+  }, { counted: false, withMedian: true });
+  const st = Object.fromEntries(sr.map(t => [t.rid, t]));
+  a(st[2].nowRank === 1 && st[3].nowRank === 2 && st[1].nowRank === 3, 'current order: record, then points for');
+  a(fmtRecord(st[1].proj) === '7-5' && st[1].proj.pf === 750.5 && st[1].proj.pa === 680, 'this week goes on top of the season');
+  a(fmtRecord(st[3].proj) === '6-5-1', 'a median tie is a tie');
+  a(st[1].projRank === 1 && st[3].projRank === 2 && st[2].projRank === 3, 'projected order by win percentage');
+  const past = projectStandings([{ roster_id: 1, settings: { wins: 5, losses: 5, fpts: 600 } }],
+    { 1: { points: 150, h2h: 'W', med: 'W' } }, { counted: true, withMedian: true });
+  a(fmtRecord(past[0].proj) === '5-5' && past[0].proj.pf === 600, 'a week already in the totals is not added twice');
+  const noMed = projectStandings([{ roster_id: 1, settings: { wins: 1, losses: 1 } }],
+    { 1: { points: 1, h2h: 'W', med: 'W' } }, { counted: false, withMedian: false });
+  a(fmtRecord(noMed[0].proj) === '2-1', 'no median game in a league without median scoring');
 
   // Chopped leagues.
   a(isChopped({ settings: { type: 3 } }, []), 'type 3 is a chopped league');

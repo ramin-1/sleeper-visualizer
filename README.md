@@ -7,8 +7,8 @@ Live league-median standings for a Sleeper fantasy football league.
 Enter a league ID and see the current week sorted against the league median —
 the top half banks an extra win, the bottom half an extra loss.
 
-Click the **Live** or **Proj** column header to choose what the standings rank on
-(on a phone, tap the one visible header to swap):
+The **Live | Proj** toggle at the top chooses what everything is scored on (the Live
+and Proj column headers do the same):
 
 - **Live points** — where the cut line sits right now.
 - **Projected final** — Sleeper's own live projection formula, ported from their
@@ -28,6 +28,12 @@ reload. A tab left open all Sunday would otherwise keep running old code.
 
 The team projected to finish first is crowned as the week's leader, since first
 place each week pays a $10 bonus.
+
+The **Standings** tab shows the season standings after this week: each team's record
+with this week's head-to-head and median results added, PF and PA with this week's
+scores added, the move from the current standings (▲▼), and the playoff line. Every
+column sorts, and clicking again reverses it. A past week is already in Sleeper's
+season totals, so for those it shows the actual standings rather than adding it twice.
 
 **Chopped (guillotine) leagues** are detected automatically. Instead of the
 median race the page shows the chopping block: only surviving teams are ranked,
