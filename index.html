@@ -261,6 +261,21 @@ function yetToPlay(starters, projById, pregame){
   return { n: pos.length, list };
 }
 
+// Sleeper sometimes leaves a matchup's starters empty for a week that hasn't started (seen
+// for one team while the others were filled in). The roster always carries the lineup that
+// will play, so fall back to it — only when the matchup has none, since for past weeks the
+// roster's lineup is today's, not that week's.
+function fillStarters(matchups, rosters){
+  const byId = Object.fromEntries(rosters.map(r => [r.roster_id, r]));
+  for (const m of matchups) {
+    const lineup = (byId[m.roster_id] || {}).starters || [];
+    if ((m.starters || []).length || !lineup.length) continue;
+    m.starters = lineup;
+    m.starters_points = lineup.map(id => (m.players_points || {})[id] || 0);
+  }
+  return matchups;
+}
+
 // What this week adds to a record: the head-to-head result, plus the median game in a
 // league that plays one. A tie (either game) is a tie.
 function weekResult(r, withMedian){
@@ -615,6 +630,7 @@ async function load(leagueId, week, mode, sort, view, sSort){
     get(`/v1/league/${leagueId}/rosters`), get(`/v1/league/${leagueId}/matchups/${week}`)
   ]);
   if (!league) throw new Error(`No Sleeper league with ID ${leagueId}.`);
+  fillStarters(matchups || [], rosters || []);
   if (!matchups || !matchups.length) {
     out.innerHTML = `<p class="sub">No matchups posted for week ${week} in ${esc(league.name)}.</p>`;
     return league;
@@ -904,7 +920,8 @@ async function boot(){
   const p = new URLSearchParams(location.search);
   const state = await get('/v1/state/nfl').catch(() => ({ week: 1 }));
   const season = state.league_season || state.season;
-  const cur = +(p.get('week') || state.week || 1);
+  // display_week is what Sleeper's own app shows; `week` moves on before Monday night is played.
+  const cur = +(p.get('week') || state.display_week || state.week || 1);
   $('#wk').innerHTML = Array.from({length: 18}, (_, i) =>
     `<option value="${i+1}" ${i+1 === cur ? 'selected' : ''}>Week ${i+1}</option>`).join('');
   let mode = p.get('mode') || ls.get('mode') || 'live';
@@ -1174,6 +1191,16 @@ function selftest(){
   a(yp.n === 4 && yp.list === 'QB, 2 WR, DEF', 'grouped by position in lineup order; got ' + yp.list);
   a(yetToPlay(['c'], ypProj, new Set(['SF'])).n === 0, 'a player whose game has started is not yet to play');
   a(yetToPlay(undefined, ypProj, new Set()).list === '', 'no lineup, nothing to play');
+
+  // Empty matchup lineups fall back to the roster's.
+  const fm = fillStarters([
+    { roster_id: 1, starters: null, players_points: { a: 4.5 } },
+    { roster_id: 2, starters: ['x'], starters_points: [9] },
+    { roster_id: 3, starters: [] }
+  ], [{ roster_id: 1, starters: ['a', 'b'] }, { roster_id: 2, starters: ['y'] }, { roster_id: 3, starters: [] }]);
+  a(fm[0].starters.join() === 'a,b' && fm[0].starters_points.join() === '4.5,0', 'missing starters come from the roster');
+  a(fm[1].starters.join() === 'x', 'a matchup that has starters is left alone');
+  a(fm[2].starters.length === 0, 'no lineup anywhere stays empty');
 
   // Projected standings.
   const sr = projectStandings([
